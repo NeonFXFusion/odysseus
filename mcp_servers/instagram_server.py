@@ -360,10 +360,18 @@ def _instagram_permalink(code: str, product_type: str = "") -> str:
 
 def _normalize_instagram_user(value) -> dict:
     data = _obj_to_dict(value)
+    profile_pic_url = (
+        _url_value(data.get("profile_pic_url"))
+        or _url_value(data.get("profile_pic_url_hd"))
+        or _url_value(data.get("profile_pic"))
+        or _url_value(data.get("avatar_url"))
+    )
     return {
         "id": str(data.get("pk") or data.get("id") or data.get("user_id") or ""),
         "username": str(data.get("username") or ""),
         "full_name": str(data.get("full_name") or ""),
+        "profile_pic_url": profile_pic_url,
+        "profile_pic_url_hd": _url_value(data.get("profile_pic_url_hd")) or profile_pic_url,
     }
 
 
@@ -845,6 +853,28 @@ class InstagramPrivateProvider:
             kwargs.pop("overwrite", None)
             return Path(fn(*args, **kwargs)).resolve()
 
+    def _download_url_with_client(self, cl, url: str, *, folder: Path, stem: str, is_video: bool) -> Path:
+        request = getattr(cl, "_send_public_request", None)
+        if not callable(request):
+            raise RuntimeError("instagrapi client cannot download URL media")
+        response = request(url, stream=True, timeout=getattr(cl, "request_timeout", 30))
+        response.raise_for_status()
+        content_type = str(getattr(response, "headers", {}).get("content-type") or "").split(";", 1)[0].strip()
+        suffix = Path(urlparse(str(url)).path).suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{2,5}", suffix or ""):
+            suffix = mimetypes.guess_extension(content_type) or (".mp4" if is_video else ".jpg")
+        path = (folder / f"{stem}{suffix}").resolve()
+        if path.exists():
+            return path
+        writer = getattr(cl, "_download_response_to_path", None)
+        if callable(writer):
+            return Path(writer(response, path)).resolve()
+        with path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    handle.write(chunk)
+        return path
+
     def _download_media_path(self, cl, item: dict, *, is_video: bool) -> Path:
         folder = self.media_cache_root()
         image_url = _url_value(item.get("remote_image_url") or item.get("image_url") or item.get("thumbnail_url"))
@@ -862,9 +892,17 @@ class InstagramPrivateProvider:
         if is_story:
             url = video_url if is_video else image_url
             if url and hasattr(cl, "story_download_by_url"):
-                return self._call_download(cl.story_download_by_url, url, filename=stem, folder=folder)
+                try:
+                    return self._call_download(cl.story_download_by_url, url, filename=stem, folder=folder)
+                except Exception:
+                    pass
             if pk and hasattr(cl, "story_download"):
-                return self._call_download(cl.story_download, pk, filename=stem, folder=folder)
+                try:
+                    return self._call_download(cl.story_download, pk, filename=stem, folder=folder)
+                except Exception:
+                    pass
+            if url:
+                return self._download_url_with_client(cl, url, folder=folder, stem=stem, is_video=is_video)
 
         if is_video:
             if pk and hasattr(cl, "video_download"):
@@ -878,7 +916,12 @@ class InstagramPrivateProvider:
                 except Exception:
                     pass
             if video_url and hasattr(cl, "video_download_by_url"):
-                return self._call_download(cl.video_download_by_url, video_url, filename=stem, folder=folder, overwrite=False)
+                try:
+                    return self._call_download(cl.video_download_by_url, video_url, filename=stem, folder=folder, overwrite=False)
+                except Exception:
+                    pass
+            if video_url:
+                return self._download_url_with_client(cl, video_url, folder=folder, stem=stem, is_video=True)
         else:
             if pk and hasattr(cl, "photo_download"):
                 try:
@@ -886,9 +929,14 @@ class InstagramPrivateProvider:
                 except Exception:
                     pass
             if image_url and hasattr(cl, "photo_download_by_url"):
-                return self._call_download(cl.photo_download_by_url, image_url, filename=stem, folder=folder, overwrite=False)
+                try:
+                    return self._call_download(cl.photo_download_by_url, image_url, filename=stem, folder=folder, overwrite=False)
+                except Exception:
+                    pass
+            if image_url:
+                return self._download_url_with_client(cl, image_url, folder=folder, stem=stem, is_video=False)
 
-        raise RuntimeError("Instagram media has no downloadable photo/video URL or media PK")
+        raise RuntimeError("Could not download Instagram media locally")
 
     def _attach_local_media(self, item: dict, path: Path, *, is_video: bool) -> dict:
         resolved = path.resolve()
@@ -1023,11 +1071,92 @@ class InstagramPrivateProvider:
             return own_id
         raise RuntimeError("Provide username or user_id")
 
+    def _normalize_story_collection(self, values, *, limit: int) -> list[dict]:
+        out = []
+        for story in values or []:
+            item = _normalize_media_item(story, source="story")
+            if not item:
+                continue
+            out.append(item)
+            if limit and len(out) >= limit:
+                break
+        return out
+
+    def _stories_from_tray_payload(self, payload, *, user_id: str = "", limit: int = 20) -> list[dict]:
+        data = _obj_to_dict(payload)
+        reels = (
+            data.get("tray")
+            or data.get("story_reels")
+            or data.get("reels")
+            or data.get("reels_media")
+            or data.get("items")
+            or []
+        )
+        out = []
+        for reel in reels or []:
+            reel_data = _obj_to_dict(reel)
+            reel_id = str(reel_data.get("id") or reel_data.get("pk") or reel_data.get("user_id") or "")
+            user = _obj_to_dict(reel_data.get("user") or reel_data.get("owner") or {})
+            owner_id = str(user.get("pk") or user.get("id") or user.get("user_id") or reel_id)
+            if user_id and owner_id and str(owner_id) != str(user_id):
+                continue
+            stories = reel_data.get("items") or reel_data.get("stories") or reel_data.get("media") or []
+            for story in stories or []:
+                story_data = _obj_to_dict(story)
+                if user and not story_data.get("user"):
+                    story_data = {**story_data, "user": user}
+                item = _normalize_media_item(story_data, source="story")
+                if not item:
+                    continue
+                out.append(item)
+                if limit and len(out) >= limit:
+                    return out
+        return out
+
+    def _list_story_tray(self, cl, *, user_id: str = "", amount=20) -> list[dict]:
+        limit = _coerce_limit(amount, default=20, maximum=100)
+        fn = getattr(cl, "get_reels_tray_feed", None)
+        if not callable(fn):
+            return []
+        for reason in ("pull_to_refresh", "cold_start"):
+            try:
+                stories = self._stories_from_tray_payload(fn(reason=reason), user_id=user_id, limit=limit)
+                if stories:
+                    return stories
+            except Exception:
+                continue
+        return []
+
+    def _list_user_stories(self, cl, user_id: str, *, amount=20) -> list[dict]:
+        limit = _coerce_limit(amount, default=20, maximum=100)
+        calls = []
+        for name in ("user_stories", "user_stories_v1", "user_stories_gql"):
+            fn = getattr(cl, name, None)
+            if callable(fn):
+                calls.append(lambda fn=fn: fn(str(user_id), amount=limit))
+        fn = getattr(cl, "users_stories_gql", None)
+        if callable(fn):
+            calls.append(lambda fn=fn: (fn([int(user_id)], amount=limit)[0].stories if str(user_id).isdigit() else []))
+        for call in calls:
+            try:
+                stories = self._normalize_story_collection(call(), limit=limit)
+                if stories:
+                    return stories
+            except Exception:
+                continue
+        return []
+
     def list_stories(self, *, username=None, user_id=None, amount=20) -> list[dict]:
         cl = self.login()
-        resolved_user_id = self._resolve_user_id(cl, username=username, user_id=user_id)
-        stories = cl.user_stories(resolved_user_id, amount=_coerce_limit(amount, default=20, maximum=100))
-        return [item for item in (_normalize_media_item(story, source="story") for story in stories or []) if item]
+        if username or user_id:
+            resolved_user_id = self._resolve_user_id(cl, username=username, user_id=user_id)
+            stories = self._list_user_stories(cl, resolved_user_id, amount=amount)
+            return stories or self._list_story_tray(cl, user_id=resolved_user_id, amount=amount)
+        stories = self._list_story_tray(cl, amount=amount)
+        if stories:
+            return stories
+        own_id = str(getattr(cl, "user_id", "") or "")
+        return self._list_user_stories(cl, own_id, amount=amount) if own_id else []
 
     def list_posts(self, *, username=None, user_id=None, amount=24) -> list[dict]:
         cl = self.login()
@@ -1136,11 +1265,7 @@ class InstagramPrivateProvider:
     def _normalize_thread(self, thread, *, include_messages=True) -> dict:
         users = []
         for user in _obj_get(thread, "users", default=[]) or []:
-            users.append({
-                "id": str(_obj_get(user, "pk", "id", "user_id", default="")),
-                "username": str(_obj_get(user, "username", default="")),
-                "full_name": str(_obj_get(user, "full_name", default="")),
-            })
+            users.append(_normalize_instagram_user(user))
         messages = []
         if include_messages:
             messages = [self._normalize_message(msg, users=users) for msg in (_obj_get(thread, "messages", default=[]) or [])]
@@ -1162,12 +1287,14 @@ class InstagramPrivateProvider:
         url_info = _extract_instagram_urls(text, extra_details=extra_details)
         media_items = _media_items_from_message_dict(data)
         user_id = str(_obj_get(msg, "user_id", default="") or "")
-        username = _username_for_id(user_id, users or [])
+        user = _user_for_id(user_id, users or [])
+        username = str(user.get("username") or "")
         return {
             "message_id": str(_obj_get(msg, "id", "item_id", "client_context", default="")),
             "thread_id": str(_obj_get(msg, "thread_id", default="")),
             "from_user_id": user_id,
             "from_username": username,
+            "from_profile_pic_url": str(user.get("profile_pic_url") or ""),
             "timestamp": _format_timestamp(_obj_get(msg, "timestamp", "created_at", default="")),
             "item_type": str(_obj_get(msg, "item_type", "type", default="")),
             "text": text,
@@ -1184,10 +1311,14 @@ def _thread_title_from_users(users: list[dict]) -> str:
 
 
 def _username_for_id(user_id: str, users: list[dict]) -> str:
+    return str(_user_for_id(user_id, users).get("username") or "")
+
+
+def _user_for_id(user_id: str, users: list[dict]) -> dict:
     for user in users or []:
         if str(user.get("id") or "") == str(user_id):
-            return str(user.get("username") or "")
-    return ""
+            return user
+    return {}
 
 
 def _link_details_from_message_dict(data: dict) -> list[dict]:

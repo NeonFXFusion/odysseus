@@ -254,12 +254,17 @@ def test_instagram_message_normalization_includes_media_items(monkeypatch):
         },
     }
 
-    normalized = provider._normalize_message(msg, users=[{"id": "u1", "username": "alice"}])
+    normalized = provider._normalize_message(msg, users=[{
+        "id": "u1",
+        "username": "alice",
+        "profile_pic_url": "https://cdn.example.invalid/alice.jpg",
+    }])
 
     assert normalized["media_count"] == 1
     assert normalized["media_items"][0]["kind"] == "image"
     assert normalized["media_items"][0]["image_url"] == "https://cdn.example.invalid/photo.jpg"
     assert normalized["from_username"] == "alice"
+    assert normalized["from_profile_pic_url"] == "https://cdn.example.invalid/alice.jpg"
 
 
 def test_instagram_create_post_uses_photo_upload_for_feed_image(monkeypatch, tmp_path):
@@ -323,3 +328,80 @@ def test_instagram_cache_media_downloads_video_to_local_cache(monkeypatch, tmp_p
     assert result["video_url"].startswith("/api/instagram/media-file/main/")
     assert result["local_video_url"] == result["video_url"]
     assert result["local_path"].endswith("alice_123.mp4")
+
+
+def test_instagram_cache_media_falls_back_when_download_by_url_has_no_extension(monkeypatch, tmp_path):
+    monkeypatch.setattr(ig, "INSTAGRAM_MEDIA_CACHE_DIR", tmp_path / "instagram_media")
+    calls = []
+
+    class FakeResponse:
+        headers = {"content-type": "video/mp4"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=8192):
+            yield b"video"
+
+    class FakeClient:
+        request_timeout = 3
+
+        def video_download_by_url(self, url, filename="", folder="", overwrite=True):
+            calls.append(("video_download_by_url", url, filename))
+            raise IndexError("list index out of range")
+
+        def _send_public_request(self, url, stream=True, timeout=30):
+            calls.append(("_send_public_request", url, stream, timeout))
+            return FakeResponse()
+
+        def _download_response_to_path(self, response, path):
+            path.write_bytes(b"video")
+            return path
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+
+    result = provider.cache_media({
+        "kind": "video",
+        "video_url": "https://cdn.example.invalid/signed-url-without-extension?token=1",
+    })
+
+    assert calls[0][0] == "video_download_by_url"
+    assert calls[1][0] == "_send_public_request"
+    assert result["local_path"].endswith(".mp4")
+    assert result["video_url"].startswith("/api/instagram/media-file/main/")
+
+
+def test_instagram_list_stories_uses_reels_tray_when_no_username():
+    class FakeClient:
+        user_id = "42"
+
+        def get_reels_tray_feed(self, reason="pull_to_refresh"):
+            return {
+                "tray": [{
+                    "id": "100",
+                    "user": {
+                        "pk": "100",
+                        "username": "alice",
+                        "profile_pic_url": "https://cdn.example.invalid/alice.jpg",
+                    },
+                    "items": [{
+                        "pk": "900",
+                        "id": "900_100",
+                        "media_type": 1,
+                        "thumbnail_url": "https://cdn.example.invalid/story.jpg",
+                    }],
+                }],
+            }
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+
+    stories = provider.list_stories()
+
+    assert len(stories) == 1
+    assert stories[0]["kind"] == "story"
+    assert stories[0]["username"] == "alice"
+    assert stories[0]["image_url"] == "https://cdn.example.invalid/story.jpg"

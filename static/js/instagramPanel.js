@@ -82,9 +82,9 @@ function _installStyles() {
       cursor:pointer;
       text-align:left;
       display:grid;
-      grid-template-columns:28px minmax(0,1fr);
-      gap:8px;
-      align-items:start;
+      grid-template-columns:32px minmax(0,1fr);
+      gap:10px;
+      align-items:center;
     }
     .instagram-thread + .instagram-thread { margin-top:3px; }
     .instagram-thread:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
@@ -93,8 +93,8 @@ function _installStyles() {
       background: color-mix(in srgb, var(--accent, var(--red)) 10%, transparent);
     }
     .instagram-avatar {
-      width:28px;
-      height:28px;
+      width:32px;
+      height:32px;
       border-radius:50%;
       display:inline-flex;
       align-items:center;
@@ -104,11 +104,13 @@ function _installStyles() {
       font-size:11px;
       font-weight:700;
       flex-shrink:0;
+      overflow:hidden;
     }
-    .instagram-thread-main { min-width:0; }
-    .instagram-thread-title { font-size:12px; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .instagram-thread-users { display:flex; gap:5px; align-items:center; min-width:0; margin-top:3px; font-size:11px; opacity:.58; overflow:hidden; white-space:nowrap; }
-    .instagram-thread-users span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .instagram-avatar img { width:100%; height:100%; object-fit:cover; display:block; border-radius:inherit; }
+    .instagram-thread-main { min-width:0; display:flex; flex-direction:column; gap:3px; }
+    .instagram-thread-title { font-size:12px; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.25; }
+    .instagram-thread-users { display:flex; gap:6px; align-items:center; min-width:0; font-size:11px; opacity:.66; overflow:hidden; white-space:nowrap; }
+    .instagram-thread-user { min-width:0; overflow:hidden; text-overflow:ellipsis; }
     .instagram-thread-sub { font-size:11px; opacity:.5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:3px; }
     .instagram-reader { display:flex; flex-direction:column; min-width:0; min-height:0; background:color-mix(in srgb, var(--fg) 1.5%, transparent); }
     .instagram-reader-head { border-bottom:1px solid var(--border); flex-shrink:0; }
@@ -116,8 +118,8 @@ function _installStyles() {
     #instagram-back { display:none; }
     .instagram-messages { flex:1; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
     .instagram-empty { opacity:.55; font-size:12px; text-align:center; padding:30px 18px; line-height:1.45; }
-    .instagram-msg-row { display:grid; grid-template-columns:28px minmax(0, 1fr); gap:8px; max-width:82%; align-self:flex-start; }
-    .instagram-msg-row.mine { grid-template-columns:minmax(0, 1fr) 28px; align-self:flex-end; }
+    .instagram-msg-row { display:grid; grid-template-columns:32px minmax(0, 1fr); gap:8px; max-width:82%; align-self:flex-start; }
+    .instagram-msg-row.mine { grid-template-columns:minmax(0, 1fr) 32px; align-self:flex-end; }
     .instagram-msg-row.mine .instagram-avatar { grid-column:2; grid-row:1; }
     .instagram-msg-row.mine .instagram-msg-card { grid-column:1; grid-row:1; }
     .instagram-msg-card {
@@ -248,8 +250,41 @@ function _initials(value) {
   return (parts[0]?.[0] || 'I').toUpperCase() + (parts[1]?.[0] || parts[0]?.[1] || 'G').toUpperCase();
 }
 
+function _normalizeUser(user) {
+  if (!user) return null;
+  if (typeof user === 'string') return { username: user };
+  return user;
+}
+
+function _userDisplay(user) {
+  const u = _normalizeUser(user) || {};
+  return String(u.username || u.full_name || u.id || '').replace(/^@+/, '');
+}
+
+function _avatarHtml(user, fallback = 'IG') {
+  const u = _normalizeUser(user) || {};
+  const label = _userDisplay(u) || fallback;
+  const src = u.profile_pic_url || u.profile_pic_url_hd || '';
+  return `<span class="instagram-avatar">${src
+    ? `<img src="${esc(src)}" alt="${esc(label)}" loading="lazy">`
+    : esc(_initials(label))}</span>`;
+}
+
 function _threadUsers(thread) {
-  return (thread.users || []).map(u => u.username || u.full_name).filter(Boolean);
+  return (thread.users || []).map(_normalizeUser).filter(u => u && _userDisplay(u));
+}
+
+function _threadTitleFromUsers(users) {
+  return users.map(_userDisplay).filter(Boolean).slice(0, 4).join(', ');
+}
+
+function _userForMessage(thread, msg) {
+  const users = _threadUsers(thread);
+  const id = String(msg.from_user_id || '');
+  const username = String(msg.from_username || '').replace(/^@+/, '').toLowerCase();
+  return users.find(u => String(u.id || '') === id)
+    || users.find(u => String(u.username || '').replace(/^@+/, '').toLowerCase() === username)
+    || { username: msg.from_username || msg.from_user_id || 'unknown', profile_pic_url: msg.from_profile_pic_url || '' };
 }
 
 function _previewThread(thread) {
@@ -435,14 +470,15 @@ function _renderThreadList() {
     return;
   }
   list.innerHTML = _threads.map(thread => {
-    const title = thread.thread_title || '(untitled thread)';
     const users = _threadUsers(thread);
+    const title = thread.thread_title || _threadTitleFromUsers(users) || '(untitled thread)';
+    const primary = users[0] || { username: title };
     const active = String(thread.thread_id) === String(_activeThreadId);
     return `<button class="instagram-thread ${active ? 'active' : ''}" data-thread-id="${esc(thread.thread_id)}">
-      <span class="instagram-avatar">${esc(_initials(users[0] || title))}</span>
+      ${_avatarHtml(primary, title)}
       <span class="instagram-thread-main">
         <span class="instagram-thread-title">${esc(title)}</span>
-        <span class="instagram-thread-users">${users.slice(0, 4).map(u => `<span>@${esc(u.replace(/^@+/, ''))}</span>`).join('')}</span>
+        <span class="instagram-thread-users">${users.slice(0, 4).map(u => `<span class="instagram-thread-user">@${esc(_userDisplay(u))}</span>`).join('')}</span>
         <span class="instagram-thread-sub">${esc(_previewThread(thread))}</span>
         ${_tagHtml(thread.tags || [])}
       </span>
@@ -465,7 +501,7 @@ function _setReaderEmpty(message) {
 function _recipientChips(users) {
   const values = (users || []).filter(Boolean);
   if (!values.length) return '<span style="opacity:.5">No users</span>';
-  return values.map(u => `<span class="recipient-chip"><span class="recipient-chip-label">@${esc(String(u).replace(/^@+/, ''))}</span></span>`).join('');
+  return values.map(u => `<span class="recipient-chip"><span class="recipient-chip-label">@${esc(_userDisplay(u))}</span></span>`).join('');
 }
 
 function _renderThread(thread, accountUsername = '') {
@@ -475,11 +511,12 @@ function _renderThread(thread, accountUsername = '') {
   const msgs = document.getElementById('instagram-messages');
   const reply = document.getElementById('instagram-replybar');
   const users = _threadUsers(thread);
+  const title = thread.thread_title || _threadTitleFromUsers(users) || 'Instagram thread';
   if (head) {
     head.innerHTML = `
       <div class="email-reader-header">
         <div class="email-reader-meta">
-          <div class="email-reader-meta-row"><strong>Thread:</strong><span>${esc(thread.thread_title || 'Instagram thread')}</span></div>
+          <div class="email-reader-meta-row"><strong>Thread:</strong><span>${esc(title)}</span></div>
           <div class="email-reader-meta-row"><strong>People:</strong><span class="recipient-chips">${_recipientChips(users)}</span></div>
         </div>
         <div class="email-reader-actions">
@@ -497,10 +534,11 @@ function _renderThread(thread, accountUsername = '') {
     const own = String(accountUsername || _currentAccountUsername()).toLowerCase();
     const messages = [...(thread.messages || [])].reverse();
     msgs.innerHTML = messages.length ? messages.map(msg => {
-      const from = msg.from_username || msg.from_user_id || '';
+      const fromUser = _userForMessage(thread, msg);
+      const from = _userDisplay(fromUser) || msg.from_username || msg.from_user_id || '';
       const mine = own && String(from).toLowerCase() === own;
       const displayFrom = mine ? 'me' : (from || 'unknown');
-      const avatar = `<span class="instagram-avatar">${esc(_initials(displayFrom))}</span>`;
+      const avatar = _avatarHtml(mine ? { username: 'me' } : fromUser, displayFrom);
       return `<div class="instagram-msg-row ${mine ? 'mine' : ''}">
         ${avatar}
         <div class="instagram-msg-card">
@@ -606,9 +644,10 @@ async function _sendReply() {
   }
 }
 
-function _targetUsername(id) {
+function _targetUsername(id, { fallbackCurrent = true } = {}) {
   const input = document.getElementById(id);
-  return String(input?.value || '').trim().replace(/^@+/, '') || _currentAccountUsername();
+  const value = String(input?.value || '').trim().replace(/^@+/, '');
+  return value || (fallbackCurrent ? _currentAccountUsername() : '');
 }
 
 function _renderMediaGrid(containerId, items, emptyText) {
@@ -627,7 +666,7 @@ async function _loadStories() {
   if (grid) grid.innerHTML = '<div class="instagram-empty">Loading stories...</div>';
   const params = new URLSearchParams({ max_results: '40' });
   if (_account) params.set('account', _account);
-  const username = _targetUsername('instagram-story-user');
+  const username = _targetUsername('instagram-story-user', { fallbackCurrent: false });
   if (username) params.set('username', username);
   const data = await _fetchJson(`${API_BASE}/api/instagram/stories?${params.toString()}`);
   _stories = data.stories || [];
@@ -782,7 +821,7 @@ function _renderShell() {
       <section class="instagram-tab-panel ${_activeTab === 'stories' ? 'active' : ''}" data-instagram-panel="stories">
         <div class="instagram-content-panel">
           <div class="instagram-content-toolbar">
-            <input id="instagram-story-user" class="instagram-input" value="${esc(username)}" placeholder="username" style="width:220px;">
+            <input id="instagram-story-user" class="instagram-input" value="" placeholder="stories tray or @username" style="width:220px;">
             <button class="instagram-btn" id="instagram-story-refresh">${REFRESH_ICON} Refresh</button>
           </div>
           <div id="instagram-stories-grid"></div>
