@@ -121,6 +121,10 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "read_instagram_thread": "Read a specific Instagram DM thread by thread_id. Returns messages with stable message IDs, senders, text, item type, and extracted URL metadata.",
     "extract_instagram_urls": "Extract HTTP/HTTPS URLs from direct text or an Instagram DM thread. Labels likely tracking URLs and returns extracted_urls, url_details, and tracking_candidates.",
     "send_instagram_message": "Send an Instagram DM immediately via the private API. Provide thread_id or username/user_id, text, optional account, and optional image/video attachments from Odysseus uploads.",
+    "list_instagram_stories": "List viewable Instagram stories via the private API for the configured account or a target username/user_id. Returns story media IDs and preview image/video URLs when Instagram provides them.",
+    "list_instagram_posts": "List recent Instagram posts/reels via the private API for the configured account or a target username/user_id. Returns post media IDs, captions, permalinks, and preview image/video URLs.",
+    "get_instagram_post": "Read one Instagram post/reel by media PK, shortcode, or URL via the private API. Use after list_instagram_posts when the user wants to inspect a specific post.",
+    "create_instagram_post": "Publish an Instagram feed post, story, or reel via the private API using image/video attachments from Odysseus uploads or allowed local paths.",
     "resolve_contact": "Look up a recipient contact's email address by name. Searches CardDAV address book and sent email history. Use before send_email only when the user wants to send/compose/message a person and gives only a name. Do not use to find existing emails/messages from senders or companies such as Amazon Prime/eBay; use search_emails for that.",
     "manage_contact": "Create, update, delete, or list CardDAV contacts. Use to save a new contact, change an existing one's email/phone, or remove one. Action=list returns uids needed for update/delete. Use when the user says 'save this contact', 'add [name] to contacts', 'update [name]'s email', 'delete [name] from contacts'. Do not use for user identity facts like 'my name is <name>'; those are memory.",
     "manage_notes": "Create and manage notes and checklists (Google Keep-style). ALWAYS use this for note/todo/checklist/reminder creation — NEVER hit /api/notes via app_api. Accepts natural-language `due_date` like 'tomorrow at 9am' or '11pm today' (parsed in the USER'S timezone). The due_date IS the reminder — it fires a notification at that time, so do NOT also create a calendar event for the same reminder. Set colors, labels, pin, archive. Do NOT use manage_memory for note content.",
@@ -353,8 +357,14 @@ class ToolIndex:
         # believed it had only email tools and refused web/other tasks (#1707).
         frozenset({"email", "emails", "mail", "mails", "gmail", "googlemail", "message", "messages", "send", "reply", "replies", "inbox", "unread"}):
             {"list_email_accounts", "list_emails", "search_emails", "read_email", "extract_email_urls", "send_email", "reply_to_email", "bulk_email", "delete_email", "archive_email", "mark_email_read", "ui_control"},
-        frozenset({"instagram", "insta", "ig", "instagram dm", "instagram dms", "direct message", "direct messages"}):
-            {"list_instagram_accounts", "list_instagram_threads", "search_instagram_messages", "read_instagram_thread", "extract_instagram_urls", "send_instagram_message", "ui_control"},
+        frozenset({
+            "instagram", "insta", "ig", "instagram dm", "instagram dms",
+            "direct message", "direct messages",
+            "instagram story", "instagram stories", "ig story", "ig stories",
+            "instagram post", "instagram posts", "ig post", "ig posts",
+            "instagram reel", "instagram reels", "ig reel", "ig reels",
+        }):
+            {"list_instagram_accounts", "list_instagram_threads", "search_instagram_messages", "read_instagram_thread", "extract_instagram_urls", "send_instagram_message", "list_instagram_stories", "list_instagram_posts", "get_instagram_post", "create_instagram_post", "ui_control"},
         frozenset({"calendar", "event", "meeting", "schedule", "appointment"}):
             {"manage_calendar"},
         frozenset({"note", "todo", "reminder", "remind", "checklist", "remember to"}):

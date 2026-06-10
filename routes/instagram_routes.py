@@ -21,6 +21,13 @@ class InstagramSendRequest(BaseModel):
     attachments: list[Any] | None = None
 
 
+class InstagramCreatePostRequest(BaseModel):
+    account: str | None = None
+    caption: str = ""
+    attachments: list[Any] | None = None
+    target: str = "feed"
+
+
 def _provider(account=None):
     from mcp_servers.instagram_server import InstagramPrivateProvider
     return InstagramPrivateProvider(account=account)
@@ -116,6 +123,89 @@ def setup_instagram_routes() -> APIRouter:
                 "total": len(messages),
                 "query": query,
             }
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @router.get("/stories")
+    async def list_stories(
+        request: Request,
+        account: str | None = None,
+        username: str | None = None,
+        user_id: str | None = None,
+        max_results: int = 20,
+    ):
+        require_user(request)
+        try:
+            provider = _provider(account)
+            stories = await asyncio.to_thread(
+                provider.list_stories,
+                username=username,
+                user_id=user_id,
+                amount=max_results,
+            )
+            return {
+                "account": provider.account_label(),
+                "account_id": str(provider.account.get("id") or account or ""),
+                "stories": stories,
+                "total": len(stories),
+            }
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @router.get("/posts")
+    async def list_posts(
+        request: Request,
+        account: str | None = None,
+        username: str | None = None,
+        user_id: str | None = None,
+        max_results: int = 24,
+    ):
+        require_user(request)
+        try:
+            provider = _provider(account)
+            posts = await asyncio.to_thread(
+                provider.list_posts,
+                username=username,
+                user_id=user_id,
+                amount=max_results,
+            )
+            return {
+                "account": provider.account_label(),
+                "account_id": str(provider.account.get("id") or account or ""),
+                "posts": posts,
+                "total": len(posts),
+            }
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @router.get("/posts/{media_id}")
+    async def get_post(media_id: str, request: Request, account: str | None = None):
+        require_user(request)
+        try:
+            provider = _provider(account)
+            post = await asyncio.to_thread(provider.get_post, media_id)
+            return {
+                "account": provider.account_label(),
+                "account_id": str(provider.account.get("id") or account or ""),
+                "post": post,
+            }
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @router.post("/posts")
+    async def create_post(req: InstagramCreatePostRequest, request: Request):
+        require_user(request)
+        if not req.attachments:
+            raise HTTPException(400, "At least one image/video attachment is required")
+        try:
+            provider = _provider(req.account)
+            result = await asyncio.to_thread(
+                provider.create_post,
+                caption=req.caption,
+                attachments=req.attachments or [],
+                target=req.target,
+            )
+            return {"ok": True, "result": result}
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc
 

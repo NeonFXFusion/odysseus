@@ -248,7 +248,9 @@ _DOMAIN_RULES = {
 - Instagram/IG DMs are local tool workflows. Use `search_instagram_messages`, `list_instagram_threads`, or `read_instagram_thread`; do not use web_search/browser for DMs.
 - Search Instagram DMs with `search_instagram_messages` instead of listing threads and filtering manually.
 - For Instagram URL/link/tracking requests, search Instagram messages first; results include `extracted_urls`, `url_details`, and `tracking_candidates`.
-- For sending DMs, use `send_instagram_message` with `thread_id`, `username`, or `user_id`. Use `list_instagram_accounts` when the user names a specific IG account.""",
+- For sending DMs, use `send_instagram_message` with `thread_id`, `username`, or `user_id`. Use `list_instagram_accounts` when the user names a specific IG account.
+- For Instagram stories/posts/reels, use `list_instagram_stories`, `list_instagram_posts`, or `get_instagram_post`; do not use web search for private/account content.
+- For publishing feed posts, stories, or reels, use `create_instagram_post` with image/video attachments from Odysseus uploads or allowed local paths.""",
     "cookbook": """\
 ## Cookbook/model-serving rules
 - Cookbook is the LLM-serving subsystem.
@@ -286,7 +288,7 @@ _DOMAIN_TOOL_MAP = {
     "web": {"web_search", "web_fetch", "trigger_research", "manage_research"},
     "documents": {"create_document", "edit_document", "update_document", "suggest_document", "manage_documents"},
     "email": {"list_email_accounts", "list_emails", "search_emails", "read_email", "extract_email_urls", "send_email", "reply_to_email", "bulk_email", "archive_email", "delete_email", "mark_email_read"},
-    "instagram": {"list_instagram_accounts", "list_instagram_threads", "search_instagram_messages", "read_instagram_thread", "extract_instagram_urls", "send_instagram_message"},
+    "instagram": {"list_instagram_accounts", "list_instagram_threads", "search_instagram_messages", "read_instagram_thread", "extract_instagram_urls", "send_instagram_message", "list_instagram_stories", "list_instagram_posts", "get_instagram_post", "create_instagram_post"},
     "cookbook": {"download_model", "serve_model", "serve_preset", "list_serve_presets", "list_served_models", "stop_served_model", "tail_serve_output", "list_downloads", "cancel_download", "search_hf_models", "list_cached_models", "list_cookbook_servers", "adopt_served_model"},
     "notes_calendar_tasks": {"manage_notes", "manage_calendar", "manage_tasks"},
     "ui": {"ui_control"},
@@ -454,6 +456,10 @@ Search mail by sender, subject, and body text. Use this when the user asks to fi
     "read_instagram_thread": "- ```read_instagram_thread``` — Read an Instagram DM thread. Args (JSON): {\"thread_id\":\"...\", \"max_messages\":30, \"account\":\"main\"}. Returns messages with URL metadata.",
     "extract_instagram_urls": "- ```extract_instagram_urls``` — Extract URLs from text or an Instagram thread. Args (JSON): {\"thread_id\":\"...\", \"max_messages\":50, \"account\":\"main\"} or {\"text\":\"...\"}.",
     "send_instagram_message": "- ```send_instagram_message``` — Send an Instagram DM immediately. Args (JSON): {\"thread_id\":\"...\"} OR {\"username\":\"handle\"}, plus \"text\" and optional image/video \"attachments\" from Odysseus uploads.",
+    "list_instagram_stories": "- ```list_instagram_stories``` — List Instagram stories. Args (JSON): {\"username\":\"handle\", \"max_results\":20, \"account\":\"main\"}. Returns media IDs and preview URLs when available.",
+    "list_instagram_posts": "- ```list_instagram_posts``` — List Instagram posts/reels. Args (JSON): {\"username\":\"handle\", \"max_results\":24, \"account\":\"main\"}. Returns media IDs, captions, permalinks, and preview URLs.",
+    "get_instagram_post": "- ```get_instagram_post``` — Read one Instagram post/reel. Args (JSON): {\"media_id\":\"shortcode-or-url-or-pk\", \"account\":\"main\"}.",
+    "create_instagram_post": "- ```create_instagram_post``` — Publish an Instagram feed post, story, or reel. Args (JSON): {\"target\":\"feed\", \"caption\":\"...\", \"attachments\":[\"upload-id-or-path\"], \"account\":\"main\"}.",
     "reply_to_email": """\
 ```reply_to_email
 {"uid": "1234", "body": "Sounds good — talk Friday.", "account": "gmail"}
@@ -520,7 +526,7 @@ GENERIC LOOPBACK to allowed Odysseus internal endpoints. Use this whenever the u
 - Research: `/api/research/start`, `/api/research/tasks` (note: `/api/research/report/{id}` renders HTML — to READ a report's text use the `manage_research` tool with `action:read`, not this endpoint)
 - Compare: `/api/compare/sessions`, `/api/compare/start`
 - Email: use named email tools (`list_email_accounts`, `list_emails`, `search_emails`, `read_email`, `extract_email_urls`, `send_email`, `reply_to_email`). Do NOT use `/api/email/accounts`; it is owner-filtered in tool context and may falsely return empty.
-- Instagram: use named Instagram tools (`list_instagram_accounts`, `list_instagram_threads`, `search_instagram_messages`, `read_instagram_thread`, `extract_instagram_urls`, `send_instagram_message`) for DMs. Do NOT use web search for Instagram messages.
+- Instagram: use named Instagram tools (`list_instagram_accounts`, `list_instagram_threads`, `search_instagram_messages`, `read_instagram_thread`, `extract_instagram_urls`, `send_instagram_message`, `list_instagram_stories`, `list_instagram_posts`, `get_instagram_post`, `create_instagram_post`). Do NOT use web search for Instagram messages/account content.
 - Endpoints (model providers): `/api/endpoints`, `/api/endpoints/{id}`
 - Shell: do NOT use `app_api` for `/api/shell/*`; use named command tooling instead.
 

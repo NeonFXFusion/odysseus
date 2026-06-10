@@ -98,7 +98,14 @@ def test_email_native_tools_route_to_email_mcp():
 def test_instagram_native_tools_route_to_instagram_mcp():
     """Instagram function-call tools are implemented by the instagram MCP server."""
     names = {schema["function"]["name"] for schema in FUNCTION_TOOL_SCHEMAS}
-    assert {"search_instagram_messages", "send_instagram_message"} <= names
+    assert {
+        "search_instagram_messages",
+        "send_instagram_message",
+        "list_instagram_stories",
+        "list_instagram_posts",
+        "get_instagram_post",
+        "create_instagram_post",
+    } <= names
 
     block = function_call_to_tool_block("search_instagram_messages", json.dumps({"query": "tracking link"}))
     assert block is not None
@@ -109,3 +116,30 @@ def test_instagram_native_tools_route_to_instagram_mcp():
     assert block is not None
     assert block.tool_type == "mcp__instagram__send_instagram_message"
     assert json.loads(block.content) == {"username": "alice", "text": "hi"}
+
+    block = function_call_to_tool_block("list_instagram_stories", json.dumps({"username": "alice"}))
+    assert block is not None
+    assert block.tool_type == "mcp__instagram__list_instagram_stories"
+    assert json.loads(block.content) == {"username": "alice"}
+
+    block = function_call_to_tool_block("list_instagram_posts", json.dumps({"username": "alice"}))
+    assert block is not None
+    assert block.tool_type == "mcp__instagram__list_instagram_posts"
+    assert json.loads(block.content) == {"username": "alice"}
+
+    block = function_call_to_tool_block("get_instagram_post", json.dumps({"media_id": "ABC123"}))
+    assert block is not None
+    assert block.tool_type == "mcp__instagram__get_instagram_post"
+    assert json.loads(block.content) == {"media_id": "ABC123"}
+
+    block = function_call_to_tool_block(
+        "create_instagram_post",
+        json.dumps({"caption": "hi", "attachments": [{"path": "uploads/image.jpg"}], "target": "feed"}),
+    )
+    assert block is not None
+    assert block.tool_type == "mcp__instagram__create_instagram_post"
+    assert json.loads(block.content) == {
+        "caption": "hi",
+        "attachments": [{"path": "uploads/image.jpg"}],
+        "target": "feed",
+    }

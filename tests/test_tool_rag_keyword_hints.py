@@ -74,6 +74,22 @@ def test_instagram_dm_query_gets_instagram_tools_not_web():
     assert "web_search" not in tools
 
 
+def test_instagram_story_query_gets_story_viewer_tool_not_web():
+    """Instagram story viewing is local integration work, not web search."""
+    ti = _index_without_embeddings()
+    tools = ti.get_tools_for_query("Show instagram stories for alice", always_include={"__base__"})
+    assert {"list_instagram_accounts", "list_instagram_stories"} <= tools
+    assert "web_search" not in tools
+
+
+def test_instagram_post_creator_query_gets_creator_tool_not_web():
+    """Instagram post publishing should surface the private API creator tool."""
+    ti = _index_without_embeddings()
+    tools = ti.get_tools_for_query("Create instagram post from the uploaded image", always_include={"__base__"})
+    assert {"create_instagram_post", "list_instagram_posts", "get_instagram_post"} <= tools
+    assert "web_search" not in tools
+
+
 def test_find_company_email_surfaces_search_not_contact_resolution():
     """A company/sender in an email search must not be treated as a contact."""
     ti = _index_without_embeddings()

@@ -236,3 +236,61 @@ def test_instagrapi_xma_patch_drops_app_deep_link_without_http_fallback():
         "target_url": "instagram://media_viewer?media_id=123&entry_point=direct",
         "title_text": "Shared reel",
     }) is None
+
+
+def test_instagram_message_normalization_includes_media_items(monkeypatch):
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    msg = {
+        "item_id": "m1",
+        "thread_id": "t1",
+        "user_id": "u1",
+        "timestamp": 1_700_000_000,
+        "item_type": "media",
+        "text": "photo",
+        "media": {
+            "id": "media1",
+            "media_type": 1,
+            "thumbnail_url": "https://cdn.example.invalid/photo.jpg",
+        },
+    }
+
+    normalized = provider._normalize_message(msg, users=[{"id": "u1", "username": "alice"}])
+
+    assert normalized["media_count"] == 1
+    assert normalized["media_items"][0]["kind"] == "image"
+    assert normalized["media_items"][0]["image_url"] == "https://cdn.example.invalid/photo.jpg"
+    assert normalized["from_username"] == "alice"
+
+
+def test_instagram_create_post_uses_photo_upload_for_feed_image(monkeypatch, tmp_path):
+    image = tmp_path / "post.jpg"
+    image.write_bytes(b"jpg")
+    calls = []
+
+    class FakeClient:
+        def photo_upload(self, path, caption=""):
+            calls.append(("photo_upload", path, caption))
+            return {
+                "pk": "123",
+                "id": "123_456",
+                "code": "ABC123",
+                "media_type": 1,
+                "thumbnail_url": "https://cdn.example.invalid/post.jpg",
+                "caption_text": caption,
+                "user": {"pk": "456", "username": "alice"},
+            }
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+    monkeypatch.setattr(ig, "_prepare_attachments", lambda attachments: [{
+        "path": image,
+        "filename": "post.jpg",
+        "content_type": "image/jpeg",
+    }])
+
+    result = provider.create_post(caption="hello", attachments=["post.jpg"], target="feed")
+
+    assert calls == [("photo_upload", image, "hello")]
+    assert result["media"]["url"] == "https://www.instagram.com/p/ABC123/"
+    assert result["media"]["caption"] == "hello"

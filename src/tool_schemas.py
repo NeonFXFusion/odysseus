@@ -1261,6 +1261,87 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "list_instagram_stories",
+            "description": "List viewable Instagram stories through the private API for the configured account or a target username/user_id. Returns media preview URLs when available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "username": {"type": "string", "description": "Instagram username, with or without @. Omit for the configured account."},
+                    "user_id": {"type": "string", "description": "Instagram numeric user ID"},
+                    "max_results": {"type": "integer", "description": "Maximum stories to return (default: 20)"},
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_instagram_posts",
+            "description": "List recent Instagram posts/reels through the private API for the configured account or a target username/user_id. Returns media preview URLs when available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "username": {"type": "string", "description": "Instagram username, with or without @. Omit for the configured account."},
+                    "user_id": {"type": "string", "description": "Instagram numeric user ID"},
+                    "max_results": {"type": "integer", "description": "Maximum posts to return (default: 24)"},
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_instagram_post",
+            "description": "Read one Instagram post/reel by media PK, shortcode, or URL through the private API.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "media_id": {"type": "string", "description": "Instagram media PK, shortcode, or post/reel URL"},
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+                "required": ["media_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_instagram_post",
+            "description": "Publish an Instagram feed post, story, or reel via private API using image/video attachments from Odysseus uploads or allowed local paths.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "caption": {"type": "string", "description": "Caption text"},
+                    "target": {"type": "string", "description": "feed, story, or reel"},
+                    "attachments": {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "upload_id": {"type": "string"},
+                                        "id": {"type": "string"},
+                                        "filename": {"type": "string"},
+                                        "content_type": {"type": "string"},
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+                "required": ["attachments"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "reply_to_email",
             "description": "SEND a reply email immediately by UID. Do not use this when the user asks to open/start a reply window or draft; use ui_control action=open_email_reply instead. For follow-up 'reply ...' requests where the user clearly wants to send now, use the exact UID from the latest read_email/list_emails result; never invent UID 1. Automatically threads with In-Reply-To/References headers.",
             "parameters": {
@@ -1408,6 +1489,10 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         "read_instagram_thread",
         "extract_instagram_urls",
         "send_instagram_message",
+        "list_instagram_stories",
+        "list_instagram_posts",
+        "get_instagram_post",
+        "create_instagram_post",
     }
     if name in _BUILTIN_INSTAGRAM_TOOLS:
         return ToolBlock(f"mcp__instagram__{name}", json.dumps(args) if args else "{}")

@@ -267,6 +267,10 @@ _MCP_TOOL_MAP = {
     "read_instagram_thread":     ("instagram", "read_instagram_thread"),
     "extract_instagram_urls":    ("instagram", "extract_instagram_urls"),
     "send_instagram_message":    ("instagram", "send_instagram_message"),
+    "list_instagram_stories":    ("instagram", "list_instagram_stories"),
+    "list_instagram_posts":      ("instagram", "list_instagram_posts"),
+    "get_instagram_post":        ("instagram", "get_instagram_post"),
+    "create_instagram_post":     ("instagram", "create_instagram_post"),
 }
 
 
@@ -328,6 +332,10 @@ _MCP_ARG_PARSERS: Dict[str, Callable[[str], Dict[str, str]]] = {
     "read_instagram_thread":     _parse_json_args,
     "extract_instagram_urls":    _parse_json_args,
     "send_instagram_message":    _parse_json_args,
+    "list_instagram_stories":    _parse_json_args,
+    "list_instagram_posts":      _parse_json_args,
+    "get_instagram_post":        _parse_json_args,
+    "create_instagram_post":     _parse_json_args,
 }
 
 

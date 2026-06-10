@@ -55,3 +55,12 @@ def test_genuine_keywords_still_force_include():
     assert "reply_to_email" in ti.get_tools_for_query("reply to this email")
     assert "edit_document" in ti.get_tools_for_query("edit the document")
     assert "serve_model" in ti.get_tools_for_query("serve the model")
+
+
+def test_generic_story_or_post_does_not_force_instagram_tools():
+    ti = _index()
+    for q in ("write a story outline", "post a note to myself", "draft a reel concept"):
+        tools = ti.get_tools_for_query(q, always_include={"__base__"})
+        assert "list_instagram_posts" not in tools, q
+        assert "list_instagram_stories" not in tools, q
+        assert "create_instagram_post" not in tools, q

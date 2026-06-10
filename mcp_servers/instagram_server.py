@@ -248,6 +248,12 @@ def _obj_to_dict(obj) -> dict:
         fn = getattr(obj, method, None)
         if callable(fn):
             try:
+                return fn(mode="json")
+            except TypeError:
+                pass
+            except Exception:
+                pass
+            try:
                 return fn()
             except Exception:
                 pass
@@ -262,6 +268,145 @@ def _obj_to_dict(obj) -> dict:
         if not callable(value):
             data[name] = value
     return data
+
+
+def _url_value(value) -> str:
+    text = str(value or "").strip()
+    return text if re.match(r"^https?://", text, flags=re.IGNORECASE) else ""
+
+
+def _first_url_from_candidates(value) -> str:
+    if not value:
+        return ""
+    items = value if isinstance(value, list) else [value]
+    for item in items:
+        data = _obj_to_dict(item)
+        url = _url_value(data.get("url") if isinstance(data, dict) else item)
+        if url:
+            return url
+    return ""
+
+
+def _image_url_from_versions(value) -> str:
+    data = _obj_to_dict(value)
+    if not data:
+        return ""
+    return _first_url_from_candidates(data.get("candidates") or [])
+
+
+def _video_url_from_versions(value) -> str:
+    return _first_url_from_candidates(value or [])
+
+
+def _instagram_permalink(code: str, product_type: str = "") -> str:
+    code = str(code or "").strip()
+    if not code:
+        return ""
+    kind = "reel" if str(product_type or "").lower() in {"clips", "reels", "reel"} else "p"
+    return f"https://www.instagram.com/{kind}/{code}/"
+
+
+def _normalize_instagram_user(value) -> dict:
+    data = _obj_to_dict(value)
+    return {
+        "id": str(data.get("pk") or data.get("id") or data.get("user_id") or ""),
+        "username": str(data.get("username") or ""),
+        "full_name": str(data.get("full_name") or ""),
+    }
+
+
+def _normalize_media_item(value, *, source: str = "media", title: str = "") -> dict | None:
+    data = _obj_to_dict(value)
+    if not data:
+        return None
+    if source == "visual_media" and data.get("media"):
+        data = _obj_to_dict(data.get("media"))
+    elif data.get("media") and not any(data.get(k) for k in ("thumbnail_url", "video_url", "image_versions2")):
+        data = _obj_to_dict(data.get("media"))
+
+    resources = []
+    for resource in data.get("resources") or []:
+        item = _normalize_media_item(resource, source="carousel_resource")
+        if item:
+            resources.append(item)
+
+    image_url = (
+        _url_value(data.get("image_url"))
+        or _url_value(data.get("thumbnail_url"))
+        or _image_url_from_versions(data.get("image_versions2"))
+        or _image_url_from_versions(data.get("image_versions"))
+        or _url_value(data.get("preview_url"))
+        or _url_value(data.get("header_icon_url"))
+    )
+    video_url = (
+        _url_value(data.get("video_url"))
+        or _video_url_from_versions(data.get("video_versions"))
+    )
+    media_type = data.get("media_type")
+    product_type = str(data.get("product_type") or "")
+    if resources:
+        kind = "carousel"
+    elif video_url or media_type == 2:
+        kind = "video"
+    elif source == "story" or product_type == "story":
+        kind = "story"
+    elif image_url or media_type == 1:
+        kind = "image"
+    else:
+        kind = str(source or "media")
+
+    code = str(data.get("code") or "")
+    permalink = _url_value(data.get("url") or data.get("permalink") or data.get("external_url")) or _instagram_permalink(code, product_type)
+    caption = str(data.get("caption_text") or data.get("caption") or "")
+    item_title = str(title or data.get("title") or data.get("title_text") or data.get("header_title_text") or "")
+    user = _normalize_instagram_user(data.get("user") or {})
+    item = {
+        "id": str(data.get("id") or data.get("media_id") or data.get("pk") or ""),
+        "pk": str(data.get("pk") or data.get("media_pk") or data.get("media_id") or ""),
+        "code": code,
+        "source": source,
+        "kind": kind,
+        "media_type": media_type,
+        "product_type": product_type,
+        "title": item_title,
+        "caption": caption,
+        "thumbnail_url": image_url,
+        "image_url": image_url,
+        "video_url": video_url,
+        "url": permalink,
+        "taken_at": _format_timestamp(data.get("taken_at") or data.get("imported_taken_at") or data.get("timestamp")),
+        "username": user.get("username") or "",
+        "user": user,
+        "resources": resources,
+        "video_duration": data.get("video_duration") or data.get("playback_duration_secs") or 0,
+    }
+    if not any([item["id"], item["pk"], image_url, video_url, permalink, item_title, caption, resources]):
+        return None
+    return item
+
+
+def _media_items_from_message_dict(data: dict) -> list[dict]:
+    items = []
+    for key in ("media", "visual_media", "media_share", "clip", "xma_share", "story_share", "reel_share", "felix_share"):
+        value = data.get(key)
+        if not value:
+            continue
+        item = _normalize_media_item(value, source=key)
+        if item:
+            items.append(item)
+    for value in data.get("generic_xma") or []:
+        item = _normalize_media_item(value, source="generic_xma")
+        if item:
+            items.append(item)
+    seen = set()
+    out = []
+    for item in items:
+        key = (item.get("source"), item.get("id"), item.get("image_url"), item.get("video_url"), item.get("url"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
 
 
 def _format_timestamp(value) -> str:
@@ -677,6 +822,88 @@ class InstagramPrivateProvider:
                     })
         return out
 
+    def _resolve_user_id(self, cl, *, username=None, user_id=None) -> str:
+        if user_id:
+            return str(user_id)
+        clean_username = str(username or self.account.get("username") or "").strip().lstrip("@")
+        if clean_username:
+            if clean_username.isdigit():
+                return clean_username
+            if not hasattr(cl, "user_id_from_username"):
+                raise RuntimeError("instagrapi client cannot resolve Instagram usernames")
+            return str(cl.user_id_from_username(clean_username))
+        own_id = str(getattr(cl, "user_id", "") or "")
+        if own_id:
+            return own_id
+        raise RuntimeError("Provide username or user_id")
+
+    def list_stories(self, *, username=None, user_id=None, amount=20) -> list[dict]:
+        cl = self.login()
+        resolved_user_id = self._resolve_user_id(cl, username=username, user_id=user_id)
+        stories = cl.user_stories(resolved_user_id, amount=_coerce_limit(amount, default=20, maximum=100))
+        return [item for item in (_normalize_media_item(story, source="story") for story in stories or []) if item]
+
+    def list_posts(self, *, username=None, user_id=None, amount=24) -> list[dict]:
+        cl = self.login()
+        resolved_user_id = self._resolve_user_id(cl, username=username, user_id=user_id)
+        posts = cl.user_medias(resolved_user_id, amount=_coerce_limit(amount, default=24, maximum=100))
+        return [item for item in (_normalize_media_item(media, source="post") for media in posts or []) if item]
+
+    def get_post(self, media_id: str) -> dict:
+        cl = self.login()
+        value = str(media_id or "").strip()
+        if not value:
+            raise RuntimeError("media_id is required")
+        if "/" in value and hasattr(cl, "media_pk_from_url"):
+            value = str(cl.media_pk_from_url(value))
+        if not value.isdigit() and hasattr(cl, "media_pk_from_code"):
+            value = str(cl.media_pk_from_code(value))
+        media = cl.media_info(value)
+        item = _normalize_media_item(media, source="post")
+        if not item:
+            raise RuntimeError(f"Instagram post not found: {media_id}")
+        return item
+
+    def create_post(self, *, caption="", attachments=None, target="feed") -> dict:
+        cl = self.login()
+        prepared = _prepare_attachments(attachments or [])
+        if not prepared:
+            raise RuntimeError("At least one image/video attachment is required")
+        target = str(target or "feed").strip().lower()
+        caption = str(caption or "")
+        first = prepared[0]
+        first_type = str(first.get("content_type") or "")
+        if target in {"story", "stories"}:
+            if first_type.startswith("video/"):
+                media = cl.video_upload_to_story(first["path"], caption=caption)
+            else:
+                media = cl.photo_upload_to_story(first["path"], caption=caption)
+            normalized = _normalize_media_item(media, source="story")
+        elif target in {"reel", "reels", "clip"}:
+            if not first_type.startswith("video/"):
+                raise RuntimeError("Reel publishing requires a video attachment")
+            media = cl.clip_upload(first["path"], caption=caption)
+            normalized = _normalize_media_item(media, source="reel")
+        else:
+            if len(prepared) > 1:
+                media = cl.album_upload([item["path"] for item in prepared], caption=caption)
+            elif first_type.startswith("video/"):
+                media = cl.video_upload(first["path"], caption=caption)
+            else:
+                media = cl.photo_upload(first["path"], caption=caption)
+            normalized = _normalize_media_item(media, source="post")
+        return {
+            "ok": True,
+            "target": target,
+            "account": self.account.get("name"),
+            "account_username": self.account.get("username"),
+            "media": normalized or {},
+            "attachments": [
+                {"filename": item["filename"], "path": str(item["path"]), "content_type": item["content_type"]}
+                for item in prepared
+            ],
+        }
+
     def send_message(self, text: str, *, thread_id=None, username=None, user_id=None, attachments=None) -> dict:
         cl = self.login()
         text = str(text or "")
@@ -747,6 +974,7 @@ class InstagramPrivateProvider:
         text = str(_obj_get(msg, "text", default="") or "")
         extra_details = _link_details_from_message_dict(data)
         url_info = _extract_instagram_urls(text, extra_details=extra_details)
+        media_items = _media_items_from_message_dict(data)
         user_id = str(_obj_get(msg, "user_id", default="") or "")
         username = _username_for_id(user_id, users or [])
         return {
@@ -758,6 +986,8 @@ class InstagramPrivateProvider:
             "item_type": str(_obj_get(msg, "item_type", "type", default="")),
             "text": text,
             "raw_type": type(msg).__name__,
+            "media_items": media_items,
+            "media_count": len(media_items),
             **url_info,
         }
 
@@ -955,7 +1185,32 @@ def _format_message_row(msg: dict, index: int | None = None) -> list[str]:
         lines.append(f"   Account: {msg.get('account')} ({msg.get('account_username', '')})")
     if msg.get("text"):
         lines.append(f"   Text: {_preview(msg['text'])}")
+    if msg.get("media_items"):
+        lines.append(f"   Media item(s): {len(msg.get('media_items') or [])}")
     lines.extend(_format_url_lines(msg, indent="   ", max_other=12))
+    return lines
+
+
+def _format_media_row(item: dict, index: int | None = None) -> list[str]:
+    prefix = f"{index}. " if index is not None else ""
+    title = item.get("title") or item.get("caption") or item.get("code") or item.get("id") or "Instagram media"
+    lines = [f"{prefix}**{_preview(title, 120)}**"]
+    if item.get("kind") or item.get("source"):
+        lines.append(f"   Type: {item.get('kind') or item.get('source')}")
+    if item.get("username"):
+        lines.append(f"   User: @{item.get('username')}")
+    if item.get("taken_at"):
+        lines.append(f"   Date: {item.get('taken_at')}")
+    if item.get("pk") or item.get("id"):
+        lines.append(f"   Media ID: {item.get('pk') or item.get('id')}")
+    if item.get("url"):
+        lines.append(f"   URL: {item.get('url')}")
+    if item.get("image_url"):
+        lines.append(f"   Image: {item.get('image_url')}")
+    if item.get("video_url"):
+        lines.append(f"   Video: {item.get('video_url')}")
+    if item.get("resources"):
+        lines.append(f"   Resources: {len(item.get('resources') or [])}")
     return lines
 
 
@@ -1059,6 +1314,63 @@ async def list_tools() -> list[Tool]:
                     **ACCOUNT_PROP,
                 },
                 "required": [],
+            },
+        ),
+        Tool(
+            name="list_instagram_stories",
+            description="List viewable Instagram stories for the configured account or a target username/user_id.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "username": {"type": "string", "description": "Instagram username to view stories for. Omit for the configured account."},
+                    "user_id": {"type": "string", "description": "Instagram numeric user ID to view stories for."},
+                    "max_results": {"type": "integer", "description": "Maximum stories to return (default: 20)", "default": 20},
+                    **ACCOUNT_PROP,
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="list_instagram_posts",
+            description="List recent Instagram posts/reels for the configured account or a target username/user_id.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "username": {"type": "string", "description": "Instagram username to view posts for. Omit for the configured account."},
+                    "user_id": {"type": "string", "description": "Instagram numeric user ID to view posts for."},
+                    "max_results": {"type": "integer", "description": "Maximum posts to return (default: 24)", "default": 24},
+                    **ACCOUNT_PROP,
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="get_instagram_post",
+            description="Read a specific Instagram post/reel by media PK, shortcode, or URL.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "media_id": {"type": "string", "description": "Instagram media PK, shortcode, or post/reel URL."},
+                    **ACCOUNT_PROP,
+                },
+                "required": ["media_id"],
+            },
+        ),
+        Tool(
+            name="create_instagram_post",
+            description=(
+                "Publish an Instagram feed post, story, or reel via private API. Attach image/video files "
+                "from Odysseus uploads or allowed local paths."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "caption": {"type": "string", "description": "Caption text"},
+                    "target": {"type": "string", "description": "feed, story, or reel", "default": "feed"},
+                    **ATTACHMENTS_PROP,
+                    **ACCOUNT_PROP,
+                },
+                "required": ["attachments"],
             },
         ),
         Tool(
@@ -1183,6 +1495,57 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if provider is not None:
                 lines.append(f"Account: {provider.account_label()}")
             lines.extend(_format_url_lines(result, max_other=40))
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        if name == "list_instagram_stories":
+            account = arguments.get("account")
+            provider = _provider(account)
+            stories = provider.list_stories(
+                username=arguments.get("username"),
+                user_id=arguments.get("user_id"),
+                amount=arguments.get("max_results", 20),
+            )
+            if not stories:
+                return [TextContent(type="text", text="No Instagram stories found.")]
+            lines = [f"Found {len(stories)} Instagram story item(s) from {provider.account_label()}:\n"]
+            for i, item in enumerate(stories, 1):
+                lines.extend(_format_media_row(item, i))
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        if name == "list_instagram_posts":
+            account = arguments.get("account")
+            provider = _provider(account)
+            posts = provider.list_posts(
+                username=arguments.get("username"),
+                user_id=arguments.get("user_id"),
+                amount=arguments.get("max_results", 24),
+            )
+            if not posts:
+                return [TextContent(type="text", text="No Instagram posts found.")]
+            lines = [f"Found {len(posts)} Instagram post(s) from {provider.account_label()}:\n"]
+            for i, item in enumerate(posts, 1):
+                lines.extend(_format_media_row(item, i))
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        if name == "get_instagram_post":
+            account = arguments.get("account")
+            provider = _provider(account)
+            item = provider.get_post(arguments.get("media_id", ""))
+            return [TextContent(type="text", text="\n".join(_format_media_row(item)))]
+
+        if name == "create_instagram_post":
+            account = arguments.get("account")
+            provider = _provider(account)
+            result = provider.create_post(
+                caption=arguments.get("caption", ""),
+                attachments=arguments.get("attachments") or [],
+                target=arguments.get("target", "feed"),
+            )
+            media = result.get("media") or {}
+            lines = [
+                f"Published Instagram {result.get('target') or 'post'} from {provider.account_label()}.",
+                *[f"   {line.strip()}" for line in _format_media_row(media)],
+            ]
             return [TextContent(type="text", text="\n".join(lines))]
 
         if name == "send_instagram_message":
