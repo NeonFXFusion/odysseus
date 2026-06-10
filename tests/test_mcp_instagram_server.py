@@ -202,3 +202,37 @@ def test_instagram_login_blacklist_error_mentions_sessionid_and_proxy(monkeypatc
     message = str(excinfo.value)
     assert "sessionid cookie" in message
     assert "residential proxy/new IP" in message
+
+
+def test_instagrapi_xma_patch_allows_instagram_deep_link_target_url():
+    instagrapi = pytest.importorskip("instagrapi")
+    _ = instagrapi
+
+    ig._patch_instagrapi_xma_target_url()
+
+    from instagrapi.extractors import extract_media_v1_xma
+
+    media = extract_media_v1_xma({
+        "target_url": "instagram://media_viewer?media_id=123&entry_point=direct",
+        "title_text": "Shared reel",
+        "preview_url": "https://cdn.example.invalid/preview.jpg",
+        "preview_url_mime_type": "image/jpeg",
+    })
+
+    assert media is not None
+    assert media.title == "Shared reel"
+    assert str(media.video_url).startswith("https://cdn.example.invalid/preview.jpg")
+
+
+def test_instagrapi_xma_patch_drops_app_deep_link_without_http_fallback():
+    instagrapi = pytest.importorskip("instagrapi")
+    _ = instagrapi
+
+    ig._patch_instagrapi_xma_target_url()
+
+    from instagrapi.extractors import extract_media_v1_xma
+
+    assert extract_media_v1_xma({
+        "target_url": "instagram://media_viewer?media_id=123&entry_point=direct",
+        "title_text": "Shared reel",
+    }) is None

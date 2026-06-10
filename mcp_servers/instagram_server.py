@@ -334,6 +334,57 @@ def _instagram_login_hint(exc: Exception, *, method: str) -> RuntimeError:
     return RuntimeError(f"{detail} {hint}")
 
 
+def _http_urlish(value) -> str:
+    text = str(value or "").strip()
+    return text if re.match(r"^https?://", text, flags=re.IGNORECASE) else ""
+
+
+def _patch_instagrapi_xma_target_url():
+    """Allow Instagram app deep links in XMA shares without crashing instagrapi.
+
+    instagrapi 2.9 maps XMA `target_url` to MediaXma.video_url, which is typed
+    as Pydantic HttpUrl. Instagram sometimes sends app-only deep links such as
+    `instagram://media_viewer?...`; preserving those as raw_xma is fine, but
+    validating them as http(s) URLs breaks thread reads entirely.
+    """
+    try:
+        import instagrapi.extractors as extractors
+        from instagrapi.types import MediaXma
+    except Exception:
+        return
+    original = getattr(extractors, "extract_media_v1_xma", None)
+    if not callable(original) or getattr(original, "_odysseus_xma_patch", False):
+        return
+
+    def _safe_extract_media_v1_xma(data):
+        media = dict(data or {})
+        target_url = _http_urlish(media.get("target_url"))
+        if target_url:
+            return original(data)
+
+        fallback_url = (
+            _http_urlish(media.get("preview_url"))
+            or _http_urlish(media.get("header_icon_url"))
+            or _http_urlish(media.get("preview_image_url"))
+        )
+        if not fallback_url:
+            return None
+        return MediaXma(
+            video_url=fallback_url,
+            title=media.get("title_text", ""),
+            preview_url=media.get("preview_url", ""),
+            preview_url_mime_type=media.get("preview_url_mime_type", ""),
+            header_icon_url=media.get("header_icon_url") or None,
+            header_icon_width=media.get("header_icon_width", 0),
+            header_icon_height=media.get("header_icon_height", 0),
+            header_title_text=media.get("header_title_text", ""),
+            preview_media_fbid=media.get("preview_media_fbid", ""),
+        )
+
+    _safe_extract_media_v1_xma._odysseus_xma_patch = True
+    extractors.extract_media_v1_xma = _safe_extract_media_v1_xma
+
+
 def _load_integrations_rows() -> list[dict]:
     try:
         from src.integrations import load_integrations
@@ -505,6 +556,7 @@ class InstagramPrivateProvider:
 
     def _import_client(self):
         try:
+            _patch_instagrapi_xma_target_url()
             from instagrapi import Client
             return Client
         except ModuleNotFoundError as exc:
