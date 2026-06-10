@@ -13,6 +13,8 @@ import email
 import email.header
 import email.utils
 from email.message import EmailMessage
+from html.parser import HTMLParser as _HTMLParser
+import mimetypes
 import re
 import html
 import json
@@ -23,6 +25,7 @@ import os.path
 from pathlib import Path
 from datetime import datetime, timedelta
 import uuid
+from urllib.parse import urlparse
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -32,8 +35,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 server = Server("email")
 EMAIL_SOCKET_TIMEOUT = float(os.environ.get("EMAIL_SOCKET_TIMEOUT", "20"))
-from src.constants import DATA_DIR as _DATA_DIR, APP_DB, EMAIL_CACHE_DB, SETTINGS_FILE as _SETTINGS_FILE, MAIL_ATTACHMENTS_DIR
+from src.constants import (
+    DATA_DIR as _DATA_DIR,
+    APP_DB,
+    EMAIL_CACHE_DB,
+    SETTINGS_FILE as _SETTINGS_FILE,
+    MAIL_ATTACHMENTS_DIR,
+    UPLOAD_DIR,
+)
 DATA_DIR = Path(_DATA_DIR)
+BASE_DIR = Path(__file__).resolve().parent.parent
+EMAIL_MCP_ATTACHMENT_MAX_BYTES = int(os.environ.get("EMAIL_MCP_ATTACHMENT_MAX_BYTES", str(25 * 1024 * 1024)))
 
 
 def _b(value) -> bytes:
@@ -147,6 +159,28 @@ def _list_accounts_raw() -> list:
         return []
 
 
+def _account_selector_candidates(selector: str | None) -> list[str]:
+    """Return plausible account selectors from model-copied display labels."""
+    raw = str(selector or "").strip()
+    if not raw:
+        return []
+    candidates = [raw]
+    parsed_name, parsed_email = email.utils.parseaddr(raw)
+    for value in (parsed_email, parsed_name):
+        value = (value or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    angle = re.search(r"<([^<>]+)>", raw)
+    if angle:
+        value = angle.group(1).strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    before_angle = raw.split("<", 1)[0].strip().strip('"')
+    if before_angle and before_angle not in candidates:
+        candidates.append(before_angle)
+    return candidates
+
+
 def _resolve_account(selector: str | None) -> dict | None:
     """Given a selector (None = default, or a name/user/id string), return the
     matching row or None. Matching is case-insensitive substring on name +
@@ -159,15 +193,18 @@ def _resolve_account(selector: str | None) -> dict | None:
             if r.get("is_default"):
                 return r
         return rows[0]
-    sel = selector.strip().lower()
+    selectors = _account_selector_candidates(selector)
+    folded_selectors = [s.lower() for s in selectors]
     # Exact id match first
-    for r in rows:
-        if r["id"] == selector:
-            return r
-    for r in rows:
-        fields = [r.get("name") or "", r.get("imap_user") or "", r.get("from_address") or ""]
-        if any(sel in (f or "").lower() for f in fields):
-            return r
+    for sel in selectors:
+        for r in rows:
+            if r["id"] == sel:
+                return r
+    for sel in folded_selectors:
+        for r in rows:
+            fields = [r.get("name") or "", r.get("imap_user") or "", r.get("from_address") or ""]
+            if any(sel in (f or "").lower() for f in fields):
+                return r
     try:
         from difflib import get_close_matches
         candidates = []
@@ -178,12 +215,22 @@ def _resolve_account(selector: str | None) -> dict | None:
                     val = str(field).lower()
                     candidates.append(val)
                     by_candidate[val] = r
-        close = get_close_matches(sel, candidates, n=1, cutoff=0.72)
-        if close:
-            return by_candidate.get(close[0])
+        for sel in folded_selectors:
+            close = get_close_matches(sel, candidates, n=1, cutoff=0.72)
+            if close:
+                return by_candidate.get(close[0])
     except Exception:
         pass
     return None
+
+
+def _result_account_selector(item: dict) -> str:
+    """Stable account value for follow-up tool calls from result rows."""
+    return (
+        str(item.get("_account_email") or "").strip()
+        or str(item.get("_account") or "").strip()
+        or str(item.get("_account_id") or "").strip()
+    )
 
 
 def _load_config(account: str | None = None) -> dict:
@@ -435,6 +482,477 @@ def _decode_header(raw):
         return "".join(decoded)
 
 
+def _extract_html(msg):
+    """Extract raw HTML body from an email message, if present."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            cd = str(part.get("Content-Disposition", ""))
+            if ct == "text/html" and "attachment" not in cd:
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    return payload.decode(charset, errors="replace")
+    elif msg.get_content_type() == "text/html":
+        payload = msg.get_payload(decode=True)
+        if payload:
+            charset = msg.get_content_charset() or "utf-8"
+            return payload.decode(charset, errors="replace")
+    return ""
+
+
+def _clean_url_candidate(value) -> str:
+    raw = html.unescape(str(value or "")).strip()
+    if not raw:
+        return ""
+    raw = re.sub(r"[\x00-\x1f\x7f]+", "", raw).strip().strip("<>\"'")
+    raw = re.split(r"(?i)\)\s*;?\s*(?:src\s*:|format\s*\(|url\s*\()", raw, maxsplit=1)[0]
+    raw = re.split(r"(?i)['\"]?\)\s*format\s*\(", raw, maxsplit=1)[0]
+    raw = re.sub(r"[.,;:!?]+$", "", raw)
+    while raw.endswith(")") and raw.count(")") > raw.count("("):
+        raw = re.sub(r"[.,;:!?]+$", "", raw[:-1])
+    raw = raw.rstrip("\"'")
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return raw
+
+
+def _clean_url_context_text(value) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:240]
+
+
+def _url_detail(url, source="text", context_type="standalone", context_text="") -> dict:
+    context_text = _clean_url_context_text(context_text)
+    if context_type not in {"alt", "button", "a_text", "standalone"}:
+        context_type = "standalone"
+    if context_type != "standalone" and not context_text:
+        context_type = "standalone"
+    return {
+        "url": url,
+        "source": source,
+        "context_type": context_type,
+        "context_text": context_text,
+    }
+
+
+def _detail_rank(detail: dict) -> int:
+    return {"alt": 3, "button": 3, "a_text": 2, "standalone": 1}.get(detail.get("context_type"), 0)
+
+
+_STATIC_URL_EXT_RE = re.compile(
+    r"\.(?:avif|bmp|css|eot|gif|ico|jpe?g|js|map|png|svg|ttf|webp|woff2?)(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+_STATIC_URL_HOST_RE = re.compile(
+    r"(?:^|\.)(?:ebaystatic|ir\.ebaystatic|secureir\.ebaystatic|static|cdn|assets?)\.",
+    re.IGNORECASE,
+)
+_LOW_VALUE_URL_RE = re.compile(
+    r"\b(?:impress|impression|openpixel|pixel|beacon|logo|unsubscribe|privacy|preferences?)\b",
+    re.IGNORECASE,
+)
+_TRACKING_SIGNAL_RE = re.compile(
+    r"\b(?:track|tracking|carrier|shipment|shipping|ship|delivery|delivered|package|parcel|order|"
+    r"out\s+for\s+delivery|delivery\s+attempted|view\s+order|order\s+details)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_static_or_pixel_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    host = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+    if _STATIC_URL_EXT_RE.search(path):
+        return True
+    if _STATIC_URL_HOST_RE.search(host):
+        return True
+    if _LOW_VALUE_URL_RE.search(host + path):
+        return True
+    return False
+
+
+def _tracking_url_score(detail: dict) -> int:
+    url = str((detail or {}).get("url") or "")
+    if not url or _is_static_or_pixel_url(url):
+        return 0
+    context = str((detail or {}).get("context_text") or "")
+    parsed = urlparse(url)
+    haystack = " ".join([parsed.netloc, parsed.path, parsed.query, context])
+    score = 0
+    if _TRACKING_SIGNAL_RE.search(haystack):
+        score += 5
+    if (detail or {}).get("context_type") in {"button", "a_text"}:
+        score += 2
+    if re.search(r"\b(?:track|tracking|shipment|delivery|package|carrier)\b", haystack, re.IGNORECASE):
+        score += 4
+    if "ebay." in parsed.netloc.lower() and re.search(r"\b(?:order|track|delivery|package|shipp)", haystack, re.IGNORECASE):
+        score += 2
+    if _LOW_VALUE_URL_RE.search(haystack):
+        score -= 5
+    return max(score, 0)
+
+
+def _tracking_url_candidates(details: list[dict], limit: int = 8) -> list[dict]:
+    scored = []
+    for index, detail in enumerate(details or []):
+        score = _tracking_url_score(detail)
+        if score > 0:
+            scored.append((score, -index, detail))
+    scored.sort(reverse=True)
+    return [detail for _score, _neg_index, detail in scored[:limit]]
+
+
+def _dedupe_url_details(details) -> list[dict]:
+    by_url = {}
+    order = []
+    for detail in details or []:
+        if isinstance(detail, dict):
+            url = detail.get("url")
+            source = detail.get("source", "text")
+            context_type = detail.get("context_type", "standalone")
+            context_text = detail.get("context_text", "")
+        else:
+            url = detail
+            source = "text"
+            context_type = "standalone"
+            context_text = ""
+        clean_url = _clean_url_candidate(url)
+        if not clean_url:
+            continue
+        clean_detail = _url_detail(clean_url, source, context_type, context_text)
+        existing = by_url.get(clean_url)
+        if existing is None:
+            by_url[clean_url] = clean_detail
+            order.append(clean_url)
+        elif _detail_rank(clean_detail) > _detail_rank(existing):
+            by_url[clean_url] = clean_detail
+    return [by_url[url] for url in order]
+
+
+def _dedupe_urls(values) -> list[str]:
+    seen = set()
+    out = []
+    for value in values:
+        url = _clean_url_candidate(value)
+        if url and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _extract_url_details_from_text(
+    text: str | None,
+    *,
+    source="text",
+    context_type="standalone",
+    context_text="",
+) -> list[dict]:
+    if not isinstance(text, str) or not text:
+        return []
+    try:
+        from src.chat_helpers import extract_urls as _extract_urls
+        urls = _extract_urls(text)
+    except Exception:
+        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', text)
+    return _dedupe_url_details(
+        _url_detail(url, source, context_type, context_text)
+        for url in urls
+    )
+
+
+def _extract_urls_from_text(text: str | None) -> list[str]:
+    return [d["url"] for d in _extract_url_details_from_text(text)]
+
+
+class _EmailUrlHtmlParser(_HTMLParser):
+    """Collect URL-bearing attributes and nearby labels from an HTML email."""
+
+    _URL_ATTRS = {"href", "src", "action", "cite", "poster", "data-url", "data-href"}
+    _VOID_TAGS = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.details: list[dict] = []
+        self.stack: list[dict] = []
+
+    @staticmethod
+    def _attrs_dict(attrs) -> dict:
+        return {str(k or "").lower(): str(v or "") for k, v in (attrs or [])}
+
+    @staticmethod
+    def _is_button_like(tag: str, attrs: dict) -> bool:
+        classes = attrs.get("class", "").lower()
+        role = attrs.get("role", "").lower()
+        return tag == "button" or role == "button" or "button" in classes or re.search(r"\bbtn\b", classes)
+
+    @staticmethod
+    def _fallback_label(attrs: dict) -> str:
+        return attrs.get("aria-label") or attrs.get("title") or attrs.get("value") or attrs.get("name") or ""
+
+    def _nearest_context(self):
+        for frame in reversed(self.stack):
+            if frame.get("button_like"):
+                return "button", _clean_url_context_text(
+                    " ".join(frame.get("text_parts") or []) or self._fallback_label(frame.get("attrs") or {})
+                )
+            if frame.get("tag") == "a":
+                return "a_text", _clean_url_context_text(
+                    " ".join(frame.get("text_parts") or []) or self._fallback_label(frame.get("attrs") or {})
+                )
+        return "standalone", ""
+
+    def _add_url_attr_detail(self, tag: str, key: str, value: str, attrs: dict, frame: dict | None = None):
+        context_type = "standalone"
+        context_text = ""
+        pending = False
+
+        if tag == "img" and attrs.get("alt"):
+            context_type = "alt"
+            context_text = attrs.get("alt", "")
+        elif tag == "a" and key == "href":
+            context_type = "button" if self._is_button_like(tag, attrs) else "a_text"
+            context_text = self._fallback_label(attrs)
+            pending = True
+        elif self._is_button_like(tag, attrs):
+            context_type = "button"
+            context_text = self._fallback_label(attrs)
+            pending = True
+        else:
+            context_type, context_text = self._nearest_context()
+
+        detail = _url_detail(value, "html", context_type, context_text)
+        self.details.append(detail)
+        if pending and frame is not None:
+            frame.setdefault("url_details", []).append(detail)
+
+    def _capture_attrs(self, tag, attrs, frame=None):
+        attr_map = self._attrs_dict(attrs)
+        for key, value in attr_map.items():
+            if value and key in self._URL_ATTRS:
+                self._add_url_attr_detail(tag, key, value, attr_map, frame=frame)
+
+    def handle_starttag(self, tag, attrs):
+        tag = str(tag or "").lower()
+        attr_map = self._attrs_dict(attrs)
+        inline_label = attr_map.get("alt") if tag == "img" else ""
+        if tag == "input":
+            inline_label = self._fallback_label(attr_map)
+        if inline_label:
+            for parent in self.stack:
+                parent.setdefault("text_parts", []).append(inline_label)
+                if tag == "img" and attr_map.get("alt"):
+                    parent.setdefault("alt_parts", []).append(inline_label)
+        if tag in self._VOID_TAGS:
+            self._capture_attrs(tag, attrs, frame=None)
+            return
+
+        inside_button = any(frame.get("button_like") for frame in self.stack)
+        frame = {
+            "tag": tag,
+            "attrs": attr_map,
+            "text_parts": [],
+            "data_parts": [],
+            "alt_parts": [],
+            "url_details": [],
+            "button_like": self._is_button_like(tag, attr_map) or (tag == "a" and inside_button),
+            "contains_button": tag == "button",
+        }
+        if tag == "button":
+            for parent in self.stack:
+                parent["contains_button"] = True
+        self._capture_attrs(tag, attrs, frame=frame)
+        self.stack.append(frame)
+
+    def handle_startendtag(self, tag, attrs):
+        tag = str(tag or "").lower()
+        attr_map = self._attrs_dict(attrs)
+        inline_label = attr_map.get("alt") if tag == "img" else ""
+        if tag == "input":
+            inline_label = self._fallback_label(attr_map)
+        if inline_label:
+            for frame in self.stack:
+                frame.setdefault("text_parts", []).append(inline_label)
+                if tag == "img" and attr_map.get("alt"):
+                    frame.setdefault("alt_parts", []).append(inline_label)
+        self._capture_attrs(tag, attrs, frame=None)
+
+    def handle_data(self, data):
+        if not data:
+            return
+        for frame in self.stack:
+            frame.setdefault("text_parts", []).append(data)
+            frame.setdefault("data_parts", []).append(data)
+        context_type, context_text = self._nearest_context()
+        self.details.extend(
+            _extract_url_details_from_text(
+                data,
+                source="html",
+                context_type=context_type,
+                context_text=context_text,
+            )
+        )
+
+    def handle_endtag(self, tag):
+        tag = str(tag or "").lower()
+        while self.stack:
+            frame = self.stack.pop()
+            self._finalize_frame(frame)
+            if frame.get("tag") == tag:
+                break
+
+    def close(self):
+        super().close()
+        while self.stack:
+            self._finalize_frame(self.stack.pop())
+
+    def _finalize_frame(self, frame: dict):
+        details = frame.get("url_details") or []
+        if not details:
+            return
+        visible_label = _clean_url_context_text(
+            " ".join(frame.get("data_parts") or []) or self._fallback_label(frame.get("attrs") or {})
+        )
+        alt_label = _clean_url_context_text(" ".join(frame.get("alt_parts") or []))
+        combined_label = _clean_url_context_text(
+            " ".join(frame.get("text_parts") or []) or self._fallback_label(frame.get("attrs") or {})
+        )
+        if alt_label and not visible_label:
+            context_type = "alt"
+            label = alt_label
+        else:
+            context_type = "button" if frame.get("button_like") or frame.get("contains_button") else "a_text"
+            label = combined_label or visible_label
+        if not label:
+            context_type = "standalone"
+        for detail in details:
+            detail["context_type"] = context_type
+            detail["context_text"] = label
+
+
+def _extract_url_details_from_html(html_body: str | None) -> list[dict]:
+    if not isinstance(html_body, str) or not html_body:
+        return []
+    parser = _EmailUrlHtmlParser()
+    try:
+        parser.feed(html_body)
+        parser.close()
+    except Exception:
+        parser = None
+
+    details = []
+    if parser is not None:
+        details.extend(parser.details)
+
+    # Fallback for malformed HTML and URLs embedded in nonstandard attributes.
+    details.extend(_extract_url_details_from_text(html.unescape(html_body), source="html"))
+    return _dedupe_url_details(details)
+
+
+def _extract_urls_from_html(html_body: str | None) -> list[str]:
+    return [d["url"] for d in _extract_url_details_from_html(html_body)]
+
+
+def _extract_email_urls(text_body: str | None = None, html_body: str | None = None) -> dict:
+    text_details = _extract_url_details_from_text(text_body, source="text")
+    html_details = _extract_url_details_from_html(html_body)
+    details = _dedupe_url_details([*text_details, *html_details])
+    tracking_candidates = _tracking_url_candidates(details)
+    text_urls = [d["url"] for d in text_details]
+    html_urls = [d["url"] for d in html_details]
+    urls = [d["url"] for d in details]
+    return {
+        "urls": urls,
+        "count": len(urls),
+        "text_urls": text_urls,
+        "html_urls": html_urls,
+        "url_details": details,
+        "tracking_candidates": tracking_candidates,
+    }
+
+
+def _format_url_detail_context(detail: dict) -> str:
+    context_type = (detail or {}).get("context_type") or "standalone"
+    context_text = _clean_url_context_text((detail or {}).get("context_text") or "")
+    if context_type == "alt" and context_text:
+        return f"alt: {context_text}"
+    if context_type == "button" and context_text:
+        return f"button: {context_text}"
+    if context_type == "a_text" and context_text:
+        return f"a text: {context_text}"
+    return "standalone url"
+
+
+_EMAIL_URL_QUERY_RE = re.compile(
+    r"\b(?:urls?|links?|href|buttons?|track|tracking|carrier|shipment|shipping|"
+    r"delivery|delivered|package|parcel|order\s+(?:status|update|details)|"
+    r"verify|verification|confirm|unsubscribe)\b",
+    re.IGNORECASE,
+)
+
+
+def _query_wants_email_urls(query) -> bool:
+    return bool(_EMAIL_URL_QUERY_RE.search(str(query or "")))
+
+
+def _email_url_fields(url_info: dict) -> dict:
+    urls = list((url_info or {}).get("urls") or [])
+    return {
+        "extracted_urls": urls,
+        "url_count": int((url_info or {}).get("count") or len(urls)),
+        "url_details": list((url_info or {}).get("url_details") or []),
+        "tracking_candidates": list((url_info or {}).get("tracking_candidates") or []),
+    }
+
+
+def _format_email_url_lines(result: dict, *, indent: str = "", max_other: int = 40) -> list[str]:
+    details = (result or {}).get("url_details") or [
+        _url_detail(url, "text", "standalone", "")
+        for url in ((result or {}).get("urls") or (result or {}).get("extracted_urls") or [])
+    ]
+    candidates = (result or {}).get("tracking_candidates") or []
+    if not details and not candidates:
+        return []
+
+    lines = []
+    candidate_urls = {detail.get("url") for detail in candidates}
+    if candidates:
+        lines.append(f"{indent}Likely tracking URL candidate(s): {len(candidates)}")
+        lines.extend(
+            f"{indent}- {detail.get('url')} ({_format_url_detail_context(detail)})"
+            for detail in candidates
+        )
+
+    meaningful_other = [
+        detail for detail in details
+        if detail.get("url") not in candidate_urls and not _is_static_or_pixel_url(detail.get("url", ""))
+    ]
+    static_omitted = len([
+        detail for detail in details
+        if detail.get("url") not in candidate_urls and _is_static_or_pixel_url(detail.get("url", ""))
+    ])
+
+    lines.append(f"{indent}Found {len(details)} URL(s):")
+    if candidates:
+        lines.append(f"{indent}Other non-static URL(s): {len(meaningful_other)}")
+    else:
+        lines.append(f"{indent}No obvious tracking URL candidate was detected; listing non-static URLs.")
+    lines.extend(
+        f"{indent}- {detail.get('url')} ({_format_url_detail_context(detail)})"
+        for detail in meaningful_other[:max_other]
+    )
+    if len(meaningful_other) > max_other:
+        lines.append(f"{indent}... {len(meaningful_other) - max_other} more non-static URL(s) omitted")
+    if static_omitted:
+        lines.append(f"{indent}Omitted {static_omitted} static asset/pixel URL(s).")
+    return lines
+
+
 def _extract_text(msg):
     """Extract plain text body from email message."""
     if msg.is_multipart():
@@ -602,24 +1120,67 @@ def _list_emails_across_accounts(folder="INBOX", max_results=20,
     return combined[:max_results], errors
 
 
-def _search_emails(query, folders=None, max_results=20, account=None):
+def _coerce_max_results(value, default=20, upper=100) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = default
+    return max(1, min(count, upper))
+
+
+def _add_unique_folder(folders: list[str], folder: str | None):
+    folder = str(folder or "").strip()
+    if folder and folder not in folders:
+        folders.append(folder)
+
+
+def _default_search_folders(conn, cfg: dict) -> list[str]:
+    folders = []
+    _add_unique_folder(folders, "INBOX")
+    _add_unique_folder(folders, _detect_sent_folder(conn))
+    _add_unique_folder(folders, _resolve_folder(conn, cfg.get("archive_folder") or "Archive", "archive"))
+    return folders
+
+
+def _resolve_search_folders(conn, folders, cfg: dict) -> list[str]:
+    if folders is None:
+        return _default_search_folders(conn, cfg)
+    if isinstance(folders, str):
+        folders = [part.strip() for part in folders.split(",")]
+
+    resolved = []
+    for folder in folders or []:
+        value = str(folder or "").strip()
+        if not value:
+            continue
+        lower = value.lower()
+        if lower in {"sent", "sent mail", "sent items"}:
+            _add_unique_folder(resolved, _detect_sent_folder(conn))
+        elif lower in {"archive", "archives", "all mail", "all"}:
+            _add_unique_folder(resolved, _resolve_folder(conn, value, "archive"))
+        else:
+            _add_unique_folder(resolved, value)
+    return resolved or _default_search_folders(conn, cfg)
+
+
+def _search_emails(query, folders=None, max_results=20, account=None, include_urls=False):
     """IMAP-search emails by free-text query. Matches FROM, SUBJECT, and
     body TEXT. Walks multiple folders so older threads outside INBOX
     (Sent/Archive) are still findable. Returns the same shape as
     _list_emails plus an `_folder` tag."""
     if not query or not str(query).strip():
         return []
+    max_results = _coerce_max_results(max_results)
     q = str(query).replace("\\", "\\\\").replace('"', '\\"')
     # Mail clients commonly use OR FROM/SUBJECT/TEXT to match either field.
     # IMAP SEARCH OR is binary, so we nest it.
-    search_cmd = f'(OR OR FROM "{q}" SUBJECT "{q}" TEXT "{q}")'
-    if folders is None:
-        folders = ["INBOX", "Sent", "Archive"]
+    search_cmd = f'(OR (OR FROM "{q}" SUBJECT "{q}") TEXT "{q}")'
+    cfg = _load_config(account)
     cache = _get_cached_summaries()
     out = []
     conn = _imap_connect(account)
-    touched = []
     try:
+        folders = _resolve_search_folders(conn, folders, cfg)
         for folder in folders:
             try:
                 status, _ = conn.select(_q(folder), readonly=True)
@@ -631,11 +1192,12 @@ def _search_emails(query, folders=None, max_results=20, account=None):
                 uid_list = list(reversed(data[0].split()))[:max_results]
                 for uid in uid_list:
                     try:
-                        status, msg_data = conn.uid("FETCH", uid, "(RFC822.HEADER)")
+                        fetch_item = "(BODY.PEEK[])" if include_urls else "(RFC822.HEADER)"
+                        status, msg_data = conn.uid("FETCH", uid, fetch_item)
                         if status != "OK":
                             continue
-                        raw_header = msg_data[0][1]
-                        msg = email.message_from_bytes(raw_header)
+                        raw_message = msg_data[0][1]
+                        msg = email.message_from_bytes(raw_message)
                         subject = _decode_header(msg.get("Subject", "(no subject)"))
                         sender = _decode_header(msg.get("From", "unknown"))
                         date_str = msg.get("Date", "")
@@ -645,7 +1207,7 @@ def _search_emails(query, folders=None, max_results=20, account=None):
                         sender_name, sender_addr = email.utils.parseaddr(sender)
                         sender_display = sender_name or sender_addr
                         cached = cache.get(subject, {})
-                        out.append({
+                        item = {
                             "uid": uid.decode(),
                             "message_id": message_id,
                             "subject": subject,
@@ -655,8 +1217,17 @@ def _search_emails(query, folders=None, max_results=20, account=None):
                             "cc": cc_str,
                             "date": date_str,
                             "_folder": folder,
+                            "_account": cfg.get("account_name") or cfg.get("imap_user") or "default",
+                            "_account_email": cfg.get("imap_user") or cfg.get("from_address") or "",
+                            "_account_id": cfg.get("account_id"),
                             "summary": cached.get("summary", ""),
-                        })
+                        }
+                        if include_urls:
+                            item.update(_email_url_fields(_extract_email_urls(
+                                text_body=_extract_text(msg),
+                                html_body=_extract_html(msg),
+                            )))
+                        out.append(item)
                     except Exception:
                         continue
             except Exception:
@@ -664,8 +1235,36 @@ def _search_emails(query, folders=None, max_results=20, account=None):
     finally:
         try: conn.logout()
         except Exception: pass
-    # Cap total across folders.
-    return out[: max_results * len(folders)]
+    out.sort(key=_result_sort_time, reverse=True)
+    return out[:max_results]
+
+
+def _search_emails_across_accounts(query, folders=None, max_results=20, include_urls=False):
+    rows = _list_accounts_raw()
+    combined = []
+    errors = []
+    per_account_limit = _coerce_max_results(max_results)
+    for row in rows:
+        account_selector = row.get("id") or row.get("name") or row.get("imap_user")
+        account_name = row.get("name") or row.get("imap_user") or row.get("id") or "unknown"
+        account_email = row.get("imap_user") or row.get("from_address") or ""
+        try:
+            account_results = _search_emails(
+                query=query,
+                folders=folders,
+                max_results=per_account_limit,
+                account=account_selector,
+                include_urls=include_urls,
+            )
+            for item in account_results:
+                item["_account"] = account_name
+                item["_account_email"] = account_email
+                item["_account_id"] = row.get("id")
+            combined.extend(account_results)
+        except Exception as exc:
+            errors.append(f"{account_name} ({account_email}): {exc}")
+    combined.sort(key=_result_sort_time, reverse=True)
+    return combined[:per_account_limit], errors
 
 
 def _list_attachments_from_msg(msg):
@@ -760,6 +1359,10 @@ def _read_email(uid=None, message_id=None, folder="INBOX", account=None):
         date_str = msg.get("Date", "")
         message_id_header = msg.get("Message-ID", "")
         body = _extract_text(msg)
+        url_info = _extract_email_urls(
+            text_body=body,
+            html_body=_extract_html(msg),
+        )
         attachments = _list_attachments_from_msg(msg)
 
         sender_name, sender_addr = email.utils.parseaddr(sender)
@@ -776,6 +1379,7 @@ def _read_email(uid=None, message_id=None, folder="INBOX", account=None):
             "date": date_str,
             "body": body[:8000],
             "attachments": attachments,
+            **_email_url_fields(url_info),
         }
     finally:
         if conn:
@@ -811,6 +1415,85 @@ def _read_email_across_accounts(uid=None, message_id=None, folder="INBOX"):
             "error": (
                 f"UID {uid or message_id} exists in multiple accounts: {accounts}. "
                 "Call read_email again with the account name/email."
+            )
+        }
+    return {"error": f"Email not found in any configured account. Checked: {'; '.join(errors)}"}
+
+
+def _extract_email_urls_from_message(uid=None, message_id=None, folder="INBOX", account=None):
+    """Extract HTTP/HTTPS URLs from an email's text and HTML body."""
+    cfg = _load_config(account)
+    conn = None
+    try:
+        conn = _imap_connect(account)
+        select_status, _ = conn.select(_q(folder), readonly=True)
+        if select_status != "OK":
+            return {"error": f"IMAP folder not found: {folder}"}
+
+        if message_id and not uid:
+            search_id = str(message_id).strip().lstrip("<").rstrip(">").replace('"', '\\"')
+            status, data = conn.uid("SEARCH", None, f'(HEADER Message-ID "{search_id}")')
+            if status != "OK" or not data or not data[0]:
+                return {"error": f"Email not found with Message-ID: {message_id}"}
+            uid = data[0].split()[-1]
+
+        if not uid:
+            return {"error": "No UID, Message-ID, text, or html provided"}
+
+        status, msg_data = conn.uid("FETCH", _b(uid), "(BODY.PEEK[])")
+        if status != "OK":
+            return {"error": f"Failed to fetch email UID {uid}"}
+        if not msg_data or not msg_data[0] or not isinstance(msg_data[0], tuple) or len(msg_data[0]) < 2:
+            return {"error": f"Email not found with UID {uid}"}
+
+        msg = email.message_from_bytes(msg_data[0][1])
+        result = _extract_email_urls(
+            text_body=_extract_text(msg),
+            html_body=_extract_html(msg),
+        )
+        result.update({
+            "uid": uid.decode() if isinstance(uid, bytes) else str(uid),
+            "account": cfg.get("account_name") or cfg.get("imap_user") or "default",
+            "account_email": cfg.get("imap_user") or cfg.get("from_address") or "",
+            "account_id": cfg.get("account_id"),
+            "subject": _decode_header(msg.get("Subject", "(no subject)")),
+            "message_id": msg.get("Message-ID", ""),
+        })
+        return result
+    finally:
+        if conn:
+            try: conn.logout()
+            except Exception: pass
+
+
+def _extract_email_urls_across_accounts(uid=None, message_id=None, folder="INBOX"):
+    rows = _list_accounts_raw()
+    matches = []
+    errors = []
+    for row in rows:
+        account_selector = row.get("id") or row.get("name") or row.get("imap_user")
+        account_name = row.get("name") or row.get("imap_user") or row.get("id") or "unknown"
+        account_email = row.get("imap_user") or row.get("from_address") or ""
+        result = _extract_email_urls_from_message(
+            uid=uid,
+            message_id=message_id,
+            folder=folder,
+            account=account_selector,
+        )
+        if "error" in result:
+            errors.append(f"{account_name} <{account_email}>: {result['error']}")
+            continue
+        matches.append(result)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        accounts = ", ".join(
+            f"{m.get('account')} <{m.get('account_email')}>" for m in matches
+        )
+        return {
+            "error": (
+                f"UID {uid or message_id} exists in multiple accounts: {accounts}. "
+                "Call extract_email_urls again with the account name/email."
             )
         }
     return {"error": f"Email not found in any configured account. Checked: {'; '.join(errors)}"}
@@ -885,7 +1568,170 @@ def _smtp_connect(account=None, cfg=None):
     return conn
 
 
-def _send_email(to, subject, body, in_reply_to=None, references=None, cc=None, bcc=None, account=None):
+def _envelope_recipients(*fields) -> list[str]:
+    out = []
+    for _name, addr in email.utils.getaddresses([str(f) for f in fields if f]):
+        addr = (addr or "").strip()
+        if addr:
+            out.append(addr)
+    return out
+
+
+def _attachment_allowed_roots() -> list[Path]:
+    roots = [Path(UPLOAD_DIR), Path(MAIL_ATTACHMENTS_DIR), Path("/tmp")]
+    extra = os.environ.get("EMAIL_MCP_ATTACHMENT_ROOTS", "")
+    for item in extra.split(os.pathsep):
+        item = item.strip()
+        if item:
+            roots.append(Path(item).expanduser())
+    resolved = []
+    for root in roots:
+        try:
+            resolved.append(root.resolve())
+        except Exception:
+            pass
+    return resolved
+
+
+def _is_under_path(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _chat_upload_root() -> Path:
+    return Path(UPLOAD_DIR).resolve()
+
+
+def _find_chat_upload_path(upload_id: str) -> Path | None:
+    upload_id = Path(str(upload_id or "").strip()).name
+    if not upload_id:
+        return None
+
+    root = _chat_upload_root()
+    index_path = root / "uploads.json"
+    if index_path.exists():
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            if isinstance(index, dict):
+                for info in index.values():
+                    if not isinstance(info, dict):
+                        continue
+                    names = {
+                        str(info.get("id") or ""),
+                        Path(str(info.get("path") or "")).name,
+                        str(info.get("name") or ""),
+                        str(info.get("original_name") or ""),
+                        str(info.get("filename") or ""),
+                    }
+                    if upload_id not in names:
+                        continue
+                    stored = info.get("path")
+                    if stored:
+                        path = Path(stored).expanduser().resolve()
+                        if path.exists() and path.is_file() and _is_under_path(path, root):
+                            return path
+        except Exception:
+            pass
+
+    if re.fullmatch(r"[0-9a-fA-F]{32}(?:\.[A-Za-z0-9]+)?", upload_id):
+        direct = (root / upload_id).resolve()
+        if direct.exists() and direct.is_file() and _is_under_path(direct, root):
+            return direct
+
+    try:
+        for path in root.rglob(upload_id):
+            resolved = path.resolve()
+            if resolved.is_file() and _is_under_path(resolved, root):
+                return resolved
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_attachment_path(path_value) -> Path:
+    raw = str(path_value or "").strip()
+    if not raw:
+        raise ValueError("Attachment path is required")
+    upload_path = _find_chat_upload_path(raw)
+    if upload_path is not None:
+        return upload_path
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+    candidate = candidate.resolve()
+    if not candidate.exists():
+        raise ValueError(f"Attachment not found: {raw}")
+    if not candidate.is_file():
+        raise ValueError(f"Attachment is not a file: {raw}")
+    allowed_roots = _attachment_allowed_roots()
+    if not any(_is_under_path(candidate, root) for root in allowed_roots):
+        allowed = ", ".join(str(r) for r in allowed_roots)
+        raise ValueError(
+            "Attachment path is outside the allowed MCP email attachment roots. "
+            f"Allowed roots: {allowed}. Chat uploads are stored under {Path(UPLOAD_DIR).resolve()}. "
+            "Set EMAIL_MCP_ATTACHMENT_ROOTS to add another directory."
+        )
+    return candidate
+
+
+def _attachment_content_type(path: Path, explicit=None) -> str:
+    ctype = str(explicit or "").strip()
+    if not re.match(r"^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$", ctype):
+        guessed, encoding = mimetypes.guess_type(str(path))
+        ctype = guessed if guessed and not encoding else "application/octet-stream"
+    return ctype
+
+
+def _prepare_email_attachments(attachments) -> list[dict]:
+    if not attachments:
+        return []
+    if not isinstance(attachments, list):
+        raise ValueError("attachments must be a list of local file paths")
+
+    prepared = []
+    total_size = 0
+    for item in attachments:
+        if isinstance(item, dict):
+            path_value = item.get("path") or item.get("file") or item.get("filepath") or item.get("upload_id") or item.get("id")
+            filename = item.get("filename") or item.get("name")
+            content_type = item.get("content_type") or item.get("mime_type")
+        else:
+            path_value = item
+            filename = None
+            content_type = None
+
+        path = _resolve_attachment_path(path_value)
+        size = path.stat().st_size
+        total_size += size
+        if EMAIL_MCP_ATTACHMENT_MAX_BYTES > 0 and total_size > EMAIL_MCP_ATTACHMENT_MAX_BYTES:
+            raise ValueError(
+                f"Attachments exceed EMAIL_MCP_ATTACHMENT_MAX_BYTES ({EMAIL_MCP_ATTACHMENT_MAX_BYTES} bytes)"
+            )
+
+        safe_filename = _clean_header_value(Path(str(filename or path.name)).name) or path.name
+        ctype = _attachment_content_type(path, content_type)
+        prepared.append({
+            "path": path,
+            "filename": safe_filename,
+            "content_type": ctype,
+            "size": size,
+        })
+    return prepared
+
+
+def _attach_files_to_message(msg: EmailMessage, attachments) -> list[dict]:
+    prepared = _prepare_email_attachments(attachments)
+    for att in prepared:
+        maintype, subtype = att["content_type"].split("/", 1)
+        msg.add_attachment(
+            att["path"].read_bytes(),
+            maintype=maintype,
+            subtype=subtype,
+            filename=att["filename"],
+        )
+    return prepared
+
+
+def _send_email(to, subject, body, in_reply_to=None, references=None, cc=None, bcc=None, account=None, attachments=None):
     """Send an email via SMTP. Returns dict with status."""
     send_account, cfg = _resolve_send_config(account)
     msg = EmailMessage()
@@ -902,17 +1748,16 @@ def _send_email(to, subject, body, in_reply_to=None, references=None, cc=None, b
         msg["Date"] = email.utils.formatdate(localtime=True)
     if "Message-ID" not in msg:
         msg["Message-ID"] = email.utils.make_msgid()
-    msg.set_content(body)
+    msg.set_content(body or "")
+    attached = _attach_files_to_message(msg, attachments)
 
-    recipients = []
-    if isinstance(to, str):
-        recipients.extend([a.strip() for a in to.split(",") if a.strip()])
-    else:
-        recipients.extend(to)
-    if cc:
-        recipients.extend([a.strip() for a in cc.split(",")] if isinstance(cc, str) else cc)
-    if bcc:
-        recipients.extend([a.strip() for a in bcc.split(",")] if isinstance(bcc, str) else bcc)
+    recipients = _envelope_recipients(
+        to if isinstance(to, str) else ", ".join(to),
+        cc if isinstance(cc, str) or cc is None else ", ".join(cc),
+        bcc if isinstance(bcc, str) or bcc is None else ", ".join(bcc),
+    )
+    if not recipients:
+        raise ValueError("At least one recipient address is required")
 
     conn = _smtp_connect(send_account, cfg=cfg)
     try:
@@ -947,6 +1792,14 @@ def _send_email(to, subject, body, in_reply_to=None, references=None, cc=None, b
         "sent_folder": sent_folder,
         "sent_uid": sent_uid,
         "message_id": msg.get("Message-ID", ""),
+        "attachments": [
+            {
+                "filename": att["filename"],
+                "content_type": att["content_type"],
+                "size": att["size"],
+            }
+            for att in attached
+        ],
     }
 
 
@@ -1284,7 +2137,7 @@ async def _ai_draft_reply_to_email(uid, folder="INBOX", reply_all=False, account
     )
 
 
-def _reply_to_email(uid, body, folder="INBOX", reply_all=False, account=None):
+def _reply_to_email(uid, body, folder="INBOX", reply_all=False, account=None, attachments=None):
     """Reply to an existing email by UID. Threads via In-Reply-To/References."""
     conn = None
     try:
@@ -1328,6 +2181,7 @@ def _reply_to_email(uid, body, folder="INBOX", reply_all=False, account=None):
         references=new_references,
         cc=cc,
         account=account,
+        attachments=attachments,
     )
 
 
@@ -1508,6 +2362,32 @@ async def list_tools() -> list[Tool]:
                            "Omit to use the default account. Use list_email_accounts to discover available accounts.",
         },
     }
+    CHAT_UPLOAD_ROOT = str(Path(UPLOAD_DIR).resolve())
+    ATTACHMENTS_PROP = {
+        "attachments": {
+            "type": "array",
+            "items": {
+                "anyOf": [
+                    {"type": "string"},
+                    {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "upload_id": {"type": "string"},
+                            "filename": {"type": "string"},
+                            "content_type": {"type": "string"},
+                        },
+                    },
+                ],
+            },
+            "description": (
+                "Optional files to attach. Pass chat upload IDs directly, or full local paths. "
+                f"Chat uploads are stored under {CHAT_UPLOAD_ROOT}, usually as "
+                f"{CHAT_UPLOAD_ROOT}/YYYY/MM/DD/<upload_id>, with metadata in "
+                f"{CHAT_UPLOAD_ROOT}/uploads.json."
+            ),
+        },
+    }
     return [
         Tool(
             name="list_email_accounts",
@@ -1574,9 +2454,31 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="extract_email_urls",
+            description=(
+                "Extract HTTP/HTTPS URLs from an email's plain-text and HTML body. "
+                "Provide uid or message_id to inspect a mailbox email, or provide "
+                "text and/or html directly. HTML link href/src/action attributes are included. "
+                "Each URL is labeled with alt text, button text, a-block text, or standalone url."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Email UID from search_emails/list_emails/read_email"},
+                    "message_id": {"type": "string", "description": "RFC Message-ID header value"},
+                    "folder": {"type": "string", "description": "IMAP folder (default: INBOX)", "default": "INBOX"},
+                    "text": {"type": "string", "description": "Plain text email body to scan directly"},
+                    "html": {"type": "string", "description": "HTML email body to scan directly"},
+                    **ACCOUNT_PROP,
+                },
+                "required": [],
+            },
+        ),
+        Tool(
             name="send_email",
             description=(
                 "Send a new email via SMTP. Provide recipient(s), subject, and body. "
+                "Can include file attachments from Odysseus chat uploads. "
                 "This sends immediately; for normal assistant-written email, prefer "
                 "draft_email so the user can review and send from Odysseus. "
                 "For replying to an existing thread, use reply_to_email instead. "
@@ -1590,6 +2492,7 @@ async def list_tools() -> list[Tool]:
                     "body": {"type": "string", "description": "Plain text body"},
                     "cc": {"type": "string", "description": "CC address(es), comma-separated (optional)"},
                     "bcc": {"type": "string", "description": "BCC address(es), comma-separated (optional)"},
+                    **ATTACHMENTS_PROP,
                     **ACCOUNT_PROP,
                 },
                 "required": ["to", "subject", "body"],
@@ -1626,7 +2529,9 @@ async def list_tools() -> list[Tool]:
                 "review and send from Odysseus. Automatically threads the reply with "
                 "In-Reply-To and References headers, prefixes 'Re:' on the subject, and "
                 "uses the original sender as the recipient. Set reply_all=true to also CC "
-                "the original To/Cc recipients. For follow-up 'reply ...' requests, use "
+                "the original To/Cc recipients. Can include file attachments from Odysseus "
+                "chat uploads. "
+                "For follow-up 'reply ...' requests, use "
                 "the exact UID from the latest list_emails/read_email result; never invent UID 1."
             ),
             inputSchema={
@@ -1636,6 +2541,7 @@ async def list_tools() -> list[Tool]:
                     "body": {"type": "string", "description": "Reply body text"},
                     "folder": {"type": "string", "description": "IMAP folder (default: INBOX)", "default": "INBOX"},
                     "reply_all": {"type": "boolean", "description": "Reply to all recipients (default: false)", "default": False},
+                    **ATTACHMENTS_PROP,
                     **ACCOUNT_PROP,
                 },
                 "required": ["uid", "body"],
@@ -1763,11 +2669,12 @@ async def list_tools() -> list[Tool]:
             name="search_emails",
             description=(
                 "Search emails by free-text query (sender, subject, or body). "
-                "Walks INBOX + Sent + Archive by default so older threads are findable, "
+                "Walks INBOX + Sent + Archive/All Mail by default so older threads are findable, "
                 "not just recent unread. Use this whenever the user names a person or "
                 "topic that isn't in the most recent inbox slice — e.g. 'Sara Sotheby's', "
                 "'invoice from EY', 'last email about the property'. Returns matching "
-                "emails with their UIDs so you can read_email or reply_to_email."
+                "emails with account, folder, and UID so you can read_email, reply_to_email, "
+                "or extract_email_urls directly."
             ),
             inputSchema={
                 "type": "object",
@@ -1783,8 +2690,17 @@ async def list_tools() -> list[Tool]:
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Max results per folder (default: 20)",
+                        "description": "Max total results to return after sorting newest first (default: 20)",
                         "default": 20,
+                    },
+                    "include_urls": {
+                        "type": "boolean",
+                        "description": (
+                            "Also fetch each matching message body and include extracted_urls, url_details, "
+                            "and tracking_candidates in each email result. Automatically enabled for URL/link/"
+                            "tracking/package/delivery queries."
+                        ),
+                        "default": False,
                     },
                     **ACCOUNT_PROP,
                 },
@@ -1796,7 +2712,8 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Read the full content of a specific email. "
                 "Provide either the UID (from list_emails) or a Message-ID. "
-                "Returns the subject, sender, date, and full body text."
+                "Returns the subject, sender, date, full body text, attachments, "
+                "and extracted URL metadata (extracted_urls, url_details, tracking_candidates)."
             ),
             inputSchema={
                 "type": "object",
@@ -1864,7 +2781,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ]
                 header_lines.append(
                     f"[EMAIL ACCOUNT CONTEXT: No `account` was provided, so this result is merged across configured accounts: "
-                    f"{', '.join(account_names)}. Each row includes its source account.]\n"
+                    f"{', '.join(account_names)}. Each row includes its source account. "
+                    f"For follow-up calls, copy the exact value after `Account:` from the chosen row.]\n"
                 )
             else:
                 results = _list_emails(
@@ -1907,10 +2825,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             for i, em in enumerate(results, 1):
                 line = f"{i}. **{em['subject']}**\n   From: {em['from']} ({em['from_address']})\n   Date: {em['date']}\n   UID: {em['uid']}"
                 if em.get("_account"):
-                    account_label = em.get("_account")
-                    if em.get("_account_email"):
-                        account_label += f" <{em['_account_email']}>"
-                    line += f"\n   Account: {account_label}"
+                    account_selector = _result_account_selector(em)
+                    line += f"\n   Account: {account_selector}"
+                    if em.get("_account") and em.get("_account") != account_selector:
+                        line += f"\n   Account name: {em['_account']}"
                 if em.get("summary"):
                     line += f"\n   Summary: {em['summary']}"
                 lines.append(line)
@@ -1937,25 +2855,108 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             q = arguments.get("query", "")
             folders = arguments.get("folders") or None
             max_results = arguments.get("max_results", 20)
+            include_urls = bool(arguments.get("include_urls")) or _query_wants_email_urls(q)
             try:
-                hits = _search_emails(q, folders=folders, max_results=max_results, account=acct)
+                all_accounts = _list_accounts_raw()
+                header_lines = []
+                errors = []
+                if len(all_accounts) >= 2 and not acct:
+                    hits, errors = _search_emails_across_accounts(
+                        q,
+                        folders=folders,
+                        max_results=max_results,
+                        include_urls=include_urls,
+                    )
+                    account_names = [
+                        f"{a.get('name') or a.get('imap_user')} <{a.get('imap_user') or a.get('from_address') or '?'}>"
+                        for a in all_accounts
+                    ]
+                    header_lines.append(
+                        f"[EMAIL ACCOUNT CONTEXT: No `account` was provided, so search ran across configured accounts: "
+                        f"{', '.join(account_names)}. Each row includes its source account. "
+                        f"For follow-up calls, copy the exact value after `Account:` from the chosen row.]\n"
+                    )
+                else:
+                    hits = _search_emails(
+                        q,
+                        folders=folders,
+                        max_results=max_results,
+                        account=acct,
+                        include_urls=include_urls,
+                    )
+                    if acct and len(all_accounts) >= 2:
+                        active_cfg = _load_config(acct)
+                        header_lines.append(
+                            f"[EMAIL ACCOUNT CONTEXT: Search result is ONLY from account "
+                            f"`{active_cfg.get('account_name') or 'default'}` ({active_cfg.get('imap_user') or ''}).]\n"
+                        )
             except Exception as e:
                 return [TextContent(type="text", text=f"Search failed: {e}")]
             if not hits:
-                return [TextContent(type="text", text=f'No emails matched "{q}".')]
-            lines = [f'Found {len(hits)} email(s) matching "{q}":\n']
+                msg = f'No emails matched "{q}".'
+                if header_lines:
+                    msg = "\n".join(header_lines) + msg
+                if errors:
+                    msg += "\n[EMAIL ACCOUNT ERRORS: " + "; ".join(errors) + "]"
+                return [TextContent(type="text", text=msg)]
+            if errors:
+                header_lines.append("[EMAIL ACCOUNT ERRORS: " + "; ".join(errors) + "]\n")
+            lines = header_lines + [f'Found {len(hits)} email(s) matching "{q}":\n']
             for i, em in enumerate(hits, 1):
-                lines.append(
+                line = (
                     f"{i}. **{em['subject']}**\n"
                     f"   From: {em['from']} ({em['from_address']})\n"
                     f"   Date: {em['date']}\n"
                     f"   Folder: {em.get('_folder', 'INBOX')}\n"
                     f"   UID: {em['uid']}"
                 )
+                if em.get("_account"):
+                    account_selector = _result_account_selector(em)
+                    line += f"\n   Account: {account_selector}"
+                    if em.get("_account") and em.get("_account") != account_selector:
+                        line += f"\n   Account name: {em['_account']}"
+                lines.append(line)
                 if em.get('to'):
                     lines.append(f"   To: {em['to']}")
+                if em.get('cc'):
+                    lines.append(f"   Cc: {em['cc']}")
                 if em.get('summary'):
                     lines.append(f"   Summary: {em['summary']}")
+                if include_urls:
+                    lines.extend(_format_email_url_lines(em, indent="   ", max_other=12))
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "extract_email_urls":
+            if arguments.get("text") is not None or arguments.get("html") is not None:
+                result = _extract_email_urls(
+                    text_body=arguments.get("text"),
+                    html_body=arguments.get("html"),
+                )
+            else:
+                all_accounts = _list_accounts_raw()
+                if len(all_accounts) >= 2 and not acct:
+                    result = _extract_email_urls_across_accounts(
+                        uid=arguments.get("uid"),
+                        message_id=arguments.get("message_id"),
+                        folder=arguments.get("folder", "INBOX"),
+                    )
+                else:
+                    result = _extract_email_urls_from_message(
+                        uid=arguments.get("uid"),
+                        message_id=arguments.get("message_id"),
+                        folder=arguments.get("folder", "INBOX"),
+                        account=acct,
+                    )
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            lines = []
+            if result.get("subject"):
+                lines.append(f"Subject: {result['subject']}")
+            if result.get("uid"):
+                lines.append(f"UID: {result['uid']}")
+            if result.get("account"):
+                lines.append(f"Account: {result.get('account')} ({result.get('account_email', '')})")
+            lines.extend(_format_email_url_lines(result, max_other=40))
             return [TextContent(type="text", text="\n".join(lines))]
 
         elif name == "read_email":
@@ -1990,6 +2991,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     size_kb = a['size'] // 1024
                     text += f"  - [{a['index']}] {a['filename']} ({a['content_type']}, {size_kb}KB)\n"
                 text += "\n_Use `download_attachment` with the UID and index to download._\n"
+            url_lines = _format_email_url_lines(result, max_other=20)
+            if url_lines:
+                text += "\n**Extracted URLs:**\n" + "\n".join(url_lines) + "\n"
             text += f"\n---\n\n{result['body']}"
             return [TextContent(type="text", text=text)]
 
@@ -2006,9 +3010,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 cc=arguments.get("cc"),
                 bcc=arguments.get("bcc"),
                 account=acct,
+                attachments=arguments.get("attachments"),
             )
             acct_note = f" (from {result['account']})" if result.get("account") else ""
-            return [TextContent(type="text", text=f"Sent email to {result['to']} with subject '{result['subject']}'{acct_note}.")]
+            attach_note = (
+                f" Attached {len(result.get('attachments') or [])} file(s)."
+                if result.get("attachments") else ""
+            )
+            return [TextContent(type="text", text=f"Sent email to {result['to']} with subject '{result['subject']}'{acct_note}.{attach_note}")]
 
         elif name == "draft_email":
             to = arguments.get("to")
@@ -2046,6 +3055,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 folder=arguments.get("folder", "INBOX"),
                 reply_all=bool(arguments.get("reply_all", False)),
                 account=acct,
+                attachments=arguments.get("attachments"),
             )
             if "error" in result:
                 return [TextContent(type="text", text=f"Error: {result['error']}")]
@@ -2054,7 +3064,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 _set_flag(uid, arguments.get("folder", "INBOX"), "\\Answered", add=True, account=acct)
             except Exception:
                 pass
-            return [TextContent(type="text", text=f"Replied to UID {uid}: '{result['subject']}' → {result['to']}")]
+            attach_note = (
+                f" Attached {len(result.get('attachments') or [])} file(s)."
+                if result.get("attachments") else ""
+            )
+            return [TextContent(type="text", text=f"Replied to UID {uid}: '{result['subject']}' -> {result['to']}.{attach_note}")]
 
         elif name == "draft_email_reply":
             uid = arguments.get("uid")

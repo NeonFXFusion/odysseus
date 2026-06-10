@@ -1,4 +1,5 @@
 import sys
+import json
 from unittest.mock import MagicMock
 
 # This module needs the real agent-tool stack; importing it pulls in heavy
@@ -26,7 +27,7 @@ for _mod in _STUBBED:
 import pytest  # noqa: E402
 import src.agent_tools  # noqa: E402,F401
 from src.tool_parsing import parse_tool_blocks  # noqa: E402
-from src.tool_schemas import function_call_to_tool_block  # noqa: E402
+from src.tool_schemas import FUNCTION_TOOL_SCHEMAS, function_call_to_tool_block  # noqa: E402
 
 # Drop the stubs we installed so they do not leak into later tests.
 for _name, _original in _saved_stubs.items():
@@ -75,3 +76,20 @@ def test_google_search_mapping():
     assert block is not None
     assert block.tool_type == "web_search"
     assert block.content == "testing google search string"
+
+
+def test_email_native_tools_route_to_email_mcp():
+    """Email function-call tools are implemented by the email MCP server, so
+    native calls must be converted to namespaced MCP ToolBlocks."""
+    names = {schema["function"]["name"] for schema in FUNCTION_TOOL_SCHEMAS}
+    assert {"extract_email_urls", "search_emails"} <= names
+
+    block = function_call_to_tool_block("extract_email_urls", json.dumps({"uid": "123"}))
+    assert block is not None
+    assert block.tool_type == "mcp__email__extract_email_urls"
+    assert json.loads(block.content) == {"uid": "123"}
+
+    block = function_call_to_tool_block("search_emails", json.dumps({"query": "invoice"}))
+    assert block is not None
+    assert block.tool_type == "mcp__email__search_emails"
+    assert json.loads(block.content) == {"query": "invoice"}

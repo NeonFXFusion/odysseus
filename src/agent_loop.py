@@ -82,7 +82,10 @@ _AGENT_RULES = """\
 - Email UIDs are the values after `UID:` in tool output, not list row numbers. For example, row `1.` with `UID: 90186` must use `"90186"`, never `"1"`.
 - "Last/latest/newest email" means call `list_emails` with `max_results: 1`, `unread_only: false`, and the right `account`, then read the UID returned by that tool if full content is needed. NEVER use a table row number like "#18" as an email UID.
 - Plain "list/show/check my inbox/emails" means latest inbox mail, including read messages. Do not set `unread_only: true` unless the user explicitly asks for unread/needs attention.
-- Multiple email accounts: if tool output says "Other accounts" or the user asks "my Gmail?", "other inbox?", "work mail?", "custom domain mail?", or names any mailbox/account, DO NOT answer from memory. Call `list_email_accounts` if needed, then call `list_emails`/`read_email`/`bulk_email` with the exact `account` value for that mailbox. Account names are user-defined labels; if the user typo-matches a known account, use the closest listed account instead of claiming it does not exist. NEVER use `app_api` or `/api/email/accounts` to discover email accounts; that route is owner-filtered in tool context and can falsely return empty.
+- Email search: when the user asks to find/search/look up mail by person, company, topic, invoice/order/thread, or text, use `search_emails` instead of listing recent mail and filtering manually.
+- Do not use `resolve_contact` to find messages from companies/senders like Amazon Prime, eBay, banks, stores, newsletters, or services. `resolve_contact` is only for finding a recipient address before sending a new email.
+- Email URL extraction: when the user asks to find a message/email and extract/output a tracking URL/link, use `search_emails`; tracking/link queries return `extracted_urls`, `url_details`, and `tracking_candidates` on the email rows when available. If the search result already has `Likely tracking URL candidate(s)`, answer from that. Otherwise call `extract_email_urls` with the UID/folder/account. Do NOT use `web_search`.
+- Multiple email accounts: if tool output says "Other accounts" or the user asks "my Gmail?", "other inbox?", "work mail?", "custom domain mail?", or names any mailbox/account, DO NOT answer from memory. Call `list_email_accounts` if needed, then call `list_emails`/`search_emails`/`read_email`/`bulk_email` with the exact `account` value for that mailbox. Account names are user-defined labels; if the user typo-matches a known account, use the closest listed account instead of claiming it does not exist. NEVER use `app_api` or `/api/email/accounts` to discover email accounts; that route is owner-filtered in tool context and can falsely return empty.
 - User identity facts/preferences ("my name is <name>", "I live in <place>", "I prefer concise replies", "call me <name>") → use `manage_memory` with action=add. NEVER use `manage_contact` for facts about the user unless the user explicitly says to create/update a contact and provides contact details such as an email or phone.
 - "Create/add/write a note" / "notes" / "todos" / "remind me to X at <time>" → use `manage_notes`. Do NOT store notes in `manage_memory`; memory is for persistent facts/preferences about the user, not note content. For reminders, include a `due_date`; for todos, use `note_type=checklist` when appropriate.
 - "Do X every morning / daily / on a schedule / automatically" (e.g. "summarize my inbox every morning") → this is a request to CREATE A SCHEDULED TASK, not to do X once right now. Call `manage_tasks` with action=create (prompt = what to do, schedule + cron/time). Do NOT just perform the action inline this turn — the user wants it to recur. After creating, return a clickable `[Task name](#task-<id>)` link and tell them it'll run on schedule and show in the Tasks panel. If you also want to show a sample of this run, do that AFTER creating the task, not instead of it.
@@ -93,7 +96,7 @@ _AGENT_RULES = """\
   - Documents: `[Title](#document-<id>)`
   - Notes: `[Title](#note-<id>)`
   - Gallery images: `[Caption](#image-<id>)`
-  - Emails (use the UID from list_emails/read_email output): `[Subject](#email-<uid>)`
+  - Emails (use the UID from list_emails/search_emails/read_email output): `[Subject](#email-<uid>)`
   - Calendar events (use the uid from manage_calendar): `[Summary](#event-<uid>)` — opens the calendar on that day
   - Tasks: `[Task name](#task-<id>)`
   - Skills: `[skill-name](#skill-<name>)`
@@ -135,7 +138,10 @@ _API_AGENT_RULES = """\
 - Email UIDs are the values after `UID:` in tool output, not list row numbers. For example, row `1.` with `UID: 90186` must use `"90186"`, never `"1"`.
 - "Last/latest/newest email" means call `list_emails` with `max_results: 1`, `unread_only: false`, and the right `account`, then read the UID returned by that tool if full content is needed. NEVER use a table row number like "#18" as an email UID.
 - Plain "list/show/check my inbox/emails" means latest inbox mail, including read messages. Do not set `unread_only: true` unless the user explicitly asks for unread/needs attention.
-- Multiple email accounts: if tool output says "Other accounts" or the user asks "my Gmail?", "other inbox?", "work mail?", "custom domain mail?", or names any mailbox/account, DO NOT answer from memory or infer it is the same inbox. Call `list_email_accounts` if needed, then call `list_emails`/`read_email`/`bulk_email` with the exact `account` value for that mailbox. Account names are user-defined labels; if the user typo-matches a known account, use the closest listed account instead of claiming it does not exist. NEVER use `app_api` or `/api/email/accounts` to discover email accounts; that route is owner-filtered in tool context and can falsely return empty.
+- Email search: when the user asks to find/search/look up mail by person, company, topic, invoice/order/thread, or text, use `search_emails` instead of listing recent mail and filtering manually.
+- Do not use `resolve_contact` to find messages from companies/senders like Amazon Prime, eBay, banks, stores, newsletters, or services. `resolve_contact` is only for finding a recipient address before sending a new email.
+- Email URL extraction: when the user asks to find a message/email and extract/output a tracking URL/link, use `search_emails`; tracking/link queries return `extracted_urls`, `url_details`, and `tracking_candidates` on the email rows when available. If the search result already has `Likely tracking URL candidate(s)`, answer from that. Otherwise call `extract_email_urls` with the UID/folder/account. Do NOT use `web_search`.
+- Multiple email accounts: if tool output says "Other accounts" or the user asks "my Gmail?", "other inbox?", "work mail?", "custom domain mail?", or names any mailbox/account, DO NOT answer from memory or infer it is the same inbox. Call `list_email_accounts` if needed, then call `list_emails`/`search_emails`/`read_email`/`bulk_email` with the exact `account` value for that mailbox. Account names are user-defined labels; if the user typo-matches a known account, use the closest listed account instead of claiming it does not exist. NEVER use `app_api` or `/api/email/accounts` to discover email accounts; that route is owner-filtered in tool context and can falsely return empty.
 - User identity facts/preferences ("my name is <name>", "I live in <place>", "I prefer concise replies", "call me <name>") → use `manage_memory` with action=add. NEVER use `manage_contact` for facts about the user unless the user explicitly says to create/update a contact and provides contact details such as an email or phone.
 - You are running INSIDE Odysseus — there is no OpenWebUI, ChatGPT, or external chat backend to query. All chats/sessions live in THIS app and are accessed via `list_sessions` (or `manage_session` with `action=list`), and deleted via `manage_session` with `action=delete`. Do NOT shell out to find sqlite files, curl localhost:8080, or grep for routers — those don't exist here. If `list_sessions` returns rows, that IS the source of truth.
 - After `list_sessions`, preserve the returned `[Chat title](#session-<id>)` links in your user-facing reply. Do not rewrite chat lists as plain tables with non-clickable titles.
@@ -161,7 +167,7 @@ _API_AGENT_RULES = """\
   - Documents: `[Title](#document-<id>)`
   - Notes: `[Title](#note-<id>)`
   - Gallery images: `[Caption](#image-<id>)`
-  - Emails (use the UID from list_emails/read_email output): `[Subject](#email-<uid>)`
+  - Emails (use the UID from list_emails/search_emails/read_email output): `[Subject](#email-<uid>)`
   - Calendar events (use the uid from manage_calendar): `[Summary](#event-<uid>)` — opens the calendar on that day
   - Tasks: `[Task name](#task-<id>)`
   - Skills: `[skill-name](#skill-<name>)`
@@ -228,6 +234,8 @@ _DOMAIN_RULES = {
 ## Email rules
 - Email UIDs are the values after `UID:` in tool output, never list row numbers.
 - For latest/newest email, list with `max_results: 1`, `unread_only: false`, then read the returned UID if needed.
+- For "find/search/read/open <sender/company/topic> email/message", use `search_emails`; do not use `resolve_contact`.
+- For "find/search <sender/topic> message/email and extract/output tracking URL/link", use `search_emails`. Tracking/link searches include extracted URL metadata on the email rows when available; answer directly if a likely candidate is present. Otherwise call `extract_email_urls` with the UID/folder/account from the chosen search result. Do not call `read_email` first, and do not use `web_search`.
 - For named mailboxes/accounts, call `list_email_accounts` if needed and pass the exact `account` value.
 - Bulk email actions use `bulk_email` once with explicit UIDs; do not loop one message at a time.
 - "Open/start a reply" means open a draft via `ui_control open_email_reply`; only `reply_to_email` when the user clearly wants to send now.""",
@@ -267,7 +275,7 @@ _DOMAIN_RULES = {
 _DOMAIN_TOOL_MAP = {
     "web": {"web_search", "web_fetch", "trigger_research", "manage_research"},
     "documents": {"create_document", "edit_document", "update_document", "suggest_document", "manage_documents"},
-    "email": {"list_email_accounts", "list_emails", "read_email", "send_email", "reply_to_email", "bulk_email", "archive_email", "delete_email", "mark_email_read", "resolve_contact", "manage_contact"},
+    "email": {"list_email_accounts", "list_emails", "search_emails", "read_email", "extract_email_urls", "send_email", "reply_to_email", "bulk_email", "archive_email", "delete_email", "mark_email_read"},
     "cookbook": {"download_model", "serve_model", "serve_preset", "list_serve_presets", "list_served_models", "stop_served_model", "tail_serve_output", "list_downloads", "cancel_download", "search_hf_models", "list_cached_models", "list_cookbook_servers", "adopt_served_model"},
     "notes_calendar_tasks": {"manage_notes", "manage_calendar", "manage_tasks"},
     "ui": {"ui_control"},
@@ -416,13 +424,19 @@ Notes, checklists, AND user reminders. Use this for "create/add/write a note", t
 ```send_email
 {"to": "recipient@example.com", "subject": "Re: Your question", "body": "Hi, ...", "account": "gmail"}
 ```
-Send a new email via SMTP. Use `resolve_contact` first if you only have a name. If multiple email accounts exist, call `list_email_accounts` first and pass the chosen `account`.""",
+Send a new email via SMTP. Use `resolve_contact` first if you only have a person/contact name and need the recipient address. Do not use `resolve_contact` to find old messages from senders/companies; use `search_emails` for that. If multiple email accounts exist, call `list_email_accounts` first and pass the chosen `account`.""",
     "list_emails": """\
 ```list_emails
 {"folder": "INBOX", "max_results": 20, "unread_only": false, "account": "gmail"}
 ```
 List recent emails from a folder, newest first, including read messages by default. Use `list_email_accounts` first when the user names a mailbox/account, then pass `account`. For "last/latest/newest email", call with `max_results: 1` and `unread_only: false`.""",
-    "read_email": "- ```read_email``` — Read a specific email by UID. Args (JSON): {\"uid\": \"...\", \"folder\": \"INBOX\", \"account\": \"gmail\"}. Include `account` when the UID came from a named/non-default mailbox.",
+    "search_emails": """\
+```search_emails
+{"query": "invoice EY", "max_results": 10, "account": "gmail"}
+```
+Search mail by sender, subject, and body text. Use this when the user asks to find an email/person/topic/thread/order/invoice instead of listing recent emails and filtering manually. For requests like "find eBay message from emails and extract tracking URL" or "find Amazon Prime email", search for the sender/topic first; do not resolve it as a contact. Tracking/link queries can return `extracted_urls`, `url_details`, and `tracking_candidates` directly on each email row. Returns UID + folder + account; pass all three forward to `read_email`, `reply_to_email`, or `extract_email_urls` only if more detail is needed.""",
+    "read_email": "- ```read_email``` — Read a specific email by UID. Args (JSON): {\"uid\": \"...\", \"folder\": \"INBOX\", \"account\": \"gmail\"}. Include `account` when the UID came from a named/non-default mailbox. Returns body, attachments, and extracted URL metadata.",
+    "extract_email_urls": "- ```extract_email_urls``` — Extract links from an email by UID/Message-ID or direct text/html. Args (JSON): {\"uid\":\"...\", \"folder\":\"INBOX\", \"account\":\"gmail\"}. Returns each URL with context: `alt: ...`, `button: ...`, `a text: ...`, or `standalone url`. Use directly after `search_emails` when the user asks for tracking/open/verify links, URLs, or buttons inside an email; `read_email` is not required first.",
     "reply_to_email": """\
 ```reply_to_email
 {"uid": "1234", "body": "Sounds good — talk Friday.", "account": "gmail"}
@@ -436,7 +450,7 @@ Bulk delete/archive/mark emails. Use this for "delete all those" after listing e
     "delete_email": "- ```delete_email``` — Delete one email by UID. Args (JSON): {\"uid\":\"...\", \"folder\":\"INBOX\", \"account\":\"Gmail\"}. For multiple messages use bulk_email.",
     "archive_email": "- ```archive_email``` — Archive one email by UID. Args (JSON): {\"uid\":\"...\", \"folder\":\"INBOX\", \"account\":\"Gmail\"}. For multiple messages use bulk_email.",
     "mark_email_read": "- ```mark_email_read``` — Mark one email read/unread. Args (JSON): {\"uid\":\"...\", \"read\":true, \"folder\":\"INBOX\", \"account\":\"Gmail\"}. For multiple messages use bulk_email.",
-    "resolve_contact": "- ```resolve_contact``` — Look up a contact's email by name. Searches CardDAV address book + sent email history. Args (JSON): {\"name\": \"...\"}. Use BEFORE send_email when the user gives only a name.",
+    "resolve_contact": "- ```resolve_contact``` — Look up a recipient contact's email by name. Searches CardDAV address book + sent email history. Args (JSON): {\"name\": \"...\"}. Use BEFORE send_email only when the user wants to send/compose/message a person and gives only a name. Do NOT use for finding existing messages/emails from a sender/company such as Amazon Prime/eBay; use search_emails.",
     "manage_contact": "- ```manage_contact``` — Create/update/delete/list CardDAV contacts. Args (JSON): {\"action\": \"list|add|update|delete\", \"name\": \"...\", \"email\": \"...\", \"uid\": \"...\"}. Use only for explicit address-book/contact requests with contact details. Do NOT use for user identity facts like 'my name is <name>'; save those with manage_memory. For update/delete, call action=list first to get the uid.",
     "manage_calendar": """\
 ```manage_calendar
@@ -488,13 +502,13 @@ GENERIC LOOPBACK to allowed Odysseus internal endpoints. Use this whenever the u
 - Settings: `/api/settings`, `/api/prefs/{key}`
 - Research: `/api/research/start`, `/api/research/tasks` (note: `/api/research/report/{id}` renders HTML — to READ a report's text use the `manage_research` tool with `action:read`, not this endpoint)
 - Compare: `/api/compare/sessions`, `/api/compare/start`
-- Email: use named email tools (`list_email_accounts`, `list_emails`, `read_email`, `send_email`, `reply_to_email`). Do NOT use `/api/email/accounts`; it is owner-filtered in tool context and may falsely return empty.
+- Email: use named email tools (`list_email_accounts`, `list_emails`, `search_emails`, `read_email`, `extract_email_urls`, `send_email`, `reply_to_email`). Do NOT use `/api/email/accounts`; it is owner-filtered in tool context and may falsely return empty.
 - Endpoints (model providers): `/api/endpoints`, `/api/endpoints/{id}`
 - Shell: do NOT use `app_api` for `/api/shell/*`; use named command tooling instead.
 
 Body for POST/PUT/PATCH goes in `body` (object). Query params in `query` (object). Returns the parsed JSON of the response.
 
-**When to prefer named tools over app_api:** if a named wrapper exists (list_email_accounts, list_emails, read_email, manage_calendar, manage_notes, list_served_models, etc.) USE IT — it has nicer output formatting and clearer schema. Reach for `app_api` only when there's no wrapper for what you need.
+**When to prefer named tools over app_api:** if a named wrapper exists (list_email_accounts, list_emails, search_emails, read_email, manage_calendar, manage_notes, list_served_models, etc.) USE IT — it has nicer output formatting and clearer schema. Reach for `app_api` only when there's no wrapper for what you need.
 
 Blocked paths/routes (refused for safety): /api/auth/, /api/users/, /api/tokens/, /api/admin/, /api/shell/, /api/backup/restore, /api/email/accounts, POST /api/cookbook/packages/install, POST /api/cookbook/rebuild-engine, POST /api/cookbook/kill-pid.""",
 }
@@ -700,6 +714,251 @@ _EXPLICIT_CONTINUATION_RE = re.compile(
     r")\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
+_EMAIL_INTENT_RE = re.compile(
+    r"\b(emails?|mails?|gmail|inbox|mailbox)\b|"
+    r"\b(?:email|mail)\s+messages?\b|\bmessages?\s+(?:from|in)\s+(?:my\s+)?(?:emails?|mail|inbox)\b|"
+    r"\b(?:send|compose|draft|reply|forward)\s+(?:an?\s+)?email\b",
+    re.IGNORECASE,
+)
+_EMAIL_URL_EXTRACTION_RE = re.compile(
+    r"\b(?:find|search|look\s+up|locate|get|extract|show|output)\b.*"
+    r"\b(?:tracking|track|shipment|delivery|url|urls|link|links|href|button|unsubscribe|verify|verification)\b|"
+    r"\b(?:tracking|track|shipment|delivery|url|urls|link|links|href|button|unsubscribe|verify|verification)\b.*"
+    r"\b(?:find|search|look\s+up|locate|get|extract|show|output)\b",
+    re.IGNORECASE,
+)
+_MAILBOX_SEARCH_RE = re.compile(
+    r"\b(?:find|search|look\s+up|locate|read|open|show|get)\b.*\b(?:emails?|mails?|inbox|messages?)\b|"
+    r"\b(?:emails?|mails?|inbox|messages?)\b.*\b(?:from|about|containing|with|for)\b",
+    re.IGNORECASE,
+)
+_CONTACT_ADDRESS_RE = re.compile(
+    r"\b(?:email\s+address|contact\s+(?:email|address|info)|address\s+for)\b",
+    re.IGNORECASE,
+)
+_EMAIL_SEND_TO_NAME_RE = re.compile(
+    r"\b(?:send|email|message|compose|draft)\b(?!.*\b(?:from|in)\s+(?:my\s+)?(?:emails?|mail|inbox)\b)",
+    re.IGNORECASE,
+)
+_THINK_STRIP_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_EXPLICIT_WEB_RE = re.compile(
+    r"https?://|www\.|"
+    r"\b(?:web|website|site|page|browser|google|internet|online|latest|news|current|weather|forecast|stock price|price of)\b|"
+    r"\b(?:visit|open|fetch|check|read)\s+(?:this\s+)?(?:url|link|site|website|page)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_email_url_extraction_request(text: str) -> bool:
+    """True for local email workflows that ask to find/extract links."""
+    value = str(text or "")
+    return bool(_EMAIL_INTENT_RE.search(value) and _EMAIL_URL_EXTRACTION_RE.search(value))
+
+
+def _is_mailbox_search_request(text: str) -> bool:
+    """True when the user wants to find existing mail, not a recipient contact."""
+    value = str(text or "")
+    if _is_email_url_extraction_request(value):
+        return True
+    if _CONTACT_ADDRESS_RE.search(value):
+        return False
+    if _EMAIL_SEND_TO_NAME_RE.search(value) and not re.search(
+        r"\b(?:find|search|look\s+up|locate|read|open|show|get)\b",
+        value,
+        re.IGNORECASE,
+    ):
+        return False
+    return bool(_MAILBOX_SEARCH_RE.search(value))
+
+
+def _needs_contact_resolution_for_email(text: str) -> bool:
+    """True for composing/sending to a named recipient without an address."""
+    value = str(text or "")
+    if _is_mailbox_search_request(value) or "@" in value:
+        return False
+    return bool(_EMAIL_SEND_TO_NAME_RE.search(value))
+
+
+def _recover_email_url_extraction_tool_block(text: str, retrieval_query: str) -> Optional[object]:
+    """Recover bare UID JSON that a weak model emitted instead of a tool call.
+
+    Some local fenced-tool models choose the right next step in prose but then
+    output only the arguments, e.g. {"uid":"30546","folder":"INBOX"}. For the
+    narrow email URL extraction workflow, that should be the extract tool call,
+    not visible final text.
+    """
+    if not _is_email_url_extraction_request(retrieval_query):
+        return None
+    value = _THINK_STRIP_RE.sub("", str(text or "")).strip()
+    if not value or "{" not in value or "}" not in value:
+        return None
+    for match in re.finditer(r"\{[^{}]{1,1000}\}", value):
+        try:
+            args = json.loads(match.group(0))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(args, dict):
+            continue
+        if not (args.get("uid") or args.get("message_id")):
+            continue
+        allowed = {"uid", "message_id", "folder", "account"}
+        clean_args = {
+            key: args[key]
+            for key in allowed
+            if isinstance(args.get(key), str) and args.get(key).strip()
+        }
+        if not (clean_args.get("uid") or clean_args.get("message_id")):
+            continue
+        return ToolBlock("mcp__email__extract_email_urls", json.dumps(clean_args))
+    return None
+
+
+def _clean_email_account_selector_from_output(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    angle = re.search(r"<([^<>]+)>", text)
+    if angle:
+        return angle.group(1).strip()
+    email_match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text)
+    if email_match:
+        return email_match.group(0)
+    return text.split("(", 1)[0].strip()
+
+
+def _email_extract_args_from_search_output(output: str) -> Optional[dict]:
+    """Choose a mailbox result row and build extract_email_urls arguments."""
+    text = str(output or "")
+    if not text.strip():
+        return None
+
+    rows: list[dict] = []
+    current: Optional[dict] = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        row_match = re.match(r"^\d+\.\s+\*\*(.*?)\*\*\s*$", line)
+        if row_match:
+            if current:
+                rows.append(current)
+            current = {"subject": row_match.group(1), "body": line}
+            continue
+        if not current:
+            continue
+        current["body"] = f"{current.get('body', '')}\n{line}"
+        field_match = re.match(r"^(Folder|UID|Account):\s*(.+)$", line)
+        if field_match:
+            key = field_match.group(1).lower()
+            value = field_match.group(2).strip()
+            current[key] = value
+    if current:
+        rows.append(current)
+
+    candidates = [row for row in rows if row.get("uid")]
+    if not candidates:
+        return None
+
+    signal_re = re.compile(
+        r"\b(?:track|tracking|carrier|package|parcel|shipment|shipping|delivery|delivered|"
+        r"out\s+for\s+delivery|delivery\s+attempted|order\s+update|with\s+its\s+carrier)\b",
+        re.IGNORECASE,
+    )
+
+    def score(row_index: int, row: dict) -> tuple:
+        haystack = " ".join([str(row.get("subject") or ""), str(row.get("body") or "")])
+        folder = str(row.get("folder") or "").lower()
+        value = 0
+        if signal_re.search(haystack):
+            value += 20
+        if "inbox" == folder:
+            value += 5
+        elif "all mail" in folder or "archive" in folder:
+            value -= 2
+        return (value, -row_index)
+
+    best = max(enumerate(candidates), key=lambda item: score(item[0], item[1]))[1]
+    args = {"uid": str(best.get("uid")).strip()}
+    folder = str(best.get("folder") or "").strip()
+    if folder:
+        args["folder"] = folder
+    account = _clean_email_account_selector_from_output(str(best.get("account") or ""))
+    if account:
+        args["account"] = account
+    return args
+
+
+def _tool_name_matches(name: str, expected: str) -> bool:
+    return name == expected or name.endswith(f"__{expected}")
+
+
+def _tool_block_matches(block, expected: str) -> bool:
+    return _tool_name_matches(str(getattr(block, "tool_type", "") or ""), expected)
+
+
+def _email_search_result_has_uid(tool_events: list) -> bool:
+    for event in tool_events or []:
+        if not _tool_name_matches(str(event.get("tool") or ""), "search_emails"):
+            continue
+        if re.search(r"(?m)^\s*UID:\s*\S+", str(event.get("output") or "")):
+            return True
+    return False
+
+
+def _email_url_extraction_succeeded(tool_events: list) -> bool:
+    for event in tool_events or []:
+        if not _tool_name_matches(str(event.get("tool") or ""), "extract_email_urls"):
+            continue
+        output = str(event.get("output") or "")
+        if re.search(r"\bFound\s+\d+\s+URL\(s\)|Likely tracking URL candidate", output):
+            return True
+    return False
+
+
+def _email_url_final_answer_from_output(output: str) -> str:
+    """Build the user-facing answer directly from extract_email_urls output."""
+    text = str(output or "")
+    if not text.strip() or re.search(r"^\s*Error:", text, re.IGNORECASE):
+        return ""
+
+    likely: list[str] = []
+    fallback: list[str] = []
+    in_likely = False
+    in_other = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Likely tracking URL candidate"):
+            in_likely = True
+            in_other = False
+            continue
+        if stripped.startswith("Other non-static URL") or stripped.startswith("No obvious tracking URL"):
+            in_likely = False
+            in_other = True
+            continue
+        if stripped.startswith("Found ") or stripped.startswith("Omitted "):
+            continue
+        match = re.match(r"^-\s+(https?://\S+?)(?:\s+\(|$)", stripped)
+        if not match:
+            continue
+        url = match.group(1).rstrip(").,;")
+        if in_likely:
+            likely.append(url)
+        elif in_other:
+            fallback.append(url)
+
+    urls = likely or fallback
+    if not urls:
+        return ""
+    if len(urls) == 1:
+        return urls[0]
+    heading = "Tracking URL candidates:" if likely else "Extracted URLs:"
+    return heading + "\n" + "\n".join(f"- {url}" for url in urls)
+
+
+def _has_explicit_web_intent(text: str) -> bool:
+    return bool(_EXPLICIT_WEB_RE.search(str(text or "")))
+
+
+def _keyword_hint_matches(keyword: str, ql: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(keyword)}\b", ql))
 
 
 def _is_explicit_continuation(text: str) -> bool:
@@ -779,8 +1038,18 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("documents")
     if "notes_calendar_tasks" not in domains and has(r"\bwrite\b"):
         domains.add("documents")
-    if has(r"\b(search|web|google|look up|latest|news|current|weather|forecast|stock price|price of|website|url|https?://|www\.)\b"):
-        domains.add("web")
+    mailbox_search = _is_mailbox_search_request(retrieval_query)
+    webish = has(r"\b(search|web|google|look up|latest|news|current|weather|forecast|stock price|price of|website|url|https?://|www\.)\b")
+    email_url_extract = _is_email_url_extraction_request(retrieval_query)
+    if webish:
+        # Email search/link extraction is a local mailbox workflow. A bare
+        # "url" or "search" in that context must not surface web_search, or
+        # small models drift into unrelated web results.
+        if not (email_url_extract or mailbox_search) and ("email" not in domains or _has_explicit_web_intent(retrieval_query)):
+            domains.add("web")
+    if email_url_extract or mailbox_search:
+        domains.add("email")
+        domains.discard("web")
     if has(r"\b(research|deep dive|investigate|look into)\b"):
         domains.add("web")
     if has(r"\b(open|show|toggle|turn on|turn off|disable|enable|switch model|change model|settings|theme|panel)\b"):
@@ -1036,12 +1305,12 @@ def _build_system_prompt(
     # or ui_control open_email_reply after the first tool round.
     _inject_style = False
     _EMAIL_TOOL_HINTS = {
-        "list_email_accounts", "send_email", "reply_to_email", "list_emails", "read_email",
+        "list_email_accounts", "send_email", "reply_to_email", "list_emails", "search_emails", "read_email", "extract_email_urls",
         "bulk_email", "archive_email", "delete_email", "mark_email_read",
         "resolve_contact", "ui_control",
         "mcp__email__list_email_accounts",
         "mcp__email__send_email", "mcp__email__reply_to_email",
-        "mcp__email__list_emails", "mcp__email__read_email",
+        "mcp__email__list_emails", "mcp__email__search_emails", "mcp__email__read_email", "mcp__email__extract_email_urls",
         "mcp__email__bulk_email", "mcp__email__archive_email",
         "mcp__email__delete_email", "mcp__email__mark_email_read",
     }
@@ -1836,7 +2105,7 @@ async def stream_agent_loop(
         _relevant_tools = set(ALWAYS_AVAILABLE)
         ql = _retrieval_query.lower()
         for keywords, tools in ToolIndex._KEYWORD_HINTS.items():
-            if any(kw in ql for kw in keywords):
+            if any(_keyword_hint_matches(kw, ql) for kw in keywords):
                 _relevant_tools.update(tools)
         logger.info(f"[tool-rag] Keyword fallback selected: {sorted(_relevant_tools - ALWAYS_AVAILABLE)}")
 
@@ -1863,6 +2132,36 @@ async def stream_agent_loop(
             _relevant_tools.update({"web_search", "web_fetch"})
         if "ui" in (_intent.get("domains") or set()):
             _relevant_tools.add("ui_control")
+
+        _email_url_workflow = _is_email_url_extraction_request(_retrieval_query)
+        if _email_url_workflow:
+            _relevant_tools.update({
+                "list_email_accounts",
+                "search_emails",
+                "extract_email_urls",
+            })
+            _relevant_tools.difference_update({
+                "read_email",
+                "web_search",
+                "trigger_research",
+                "manage_research",
+            })
+            if not _has_explicit_web_intent(_retrieval_query):
+                _relevant_tools.discard("web_fetch")
+
+        if _is_mailbox_search_request(_retrieval_query):
+            _relevant_tools.update({
+                "list_email_accounts",
+                "search_emails",
+            })
+            if not _email_url_workflow:
+                _relevant_tools.add("read_email")
+            _relevant_tools.difference_update({
+                "resolve_contact",
+                "manage_contact",
+            })
+        elif _needs_contact_resolution_for_email(_retrieval_query):
+            _relevant_tools.add("resolve_contact")
 
     # If a document is open the model needs the editing tools available
     # regardless of which selection path (RAG, keyword, caller-provided) ran
@@ -2083,7 +2382,7 @@ async def stream_agent_loop(
         r"(?:tail|check|investigate|look at|see|tail|read|fetch|inspect|"
         r"verify|diagnose|examine|debug|capture|grab|pull|view|run|call|"
         r"trigger|launch|start|kick off|stop|kill|restart|adopt|serve|"
-        r"register|adopt|list|search|find|query|hit|ping|test)"
+        r"register|adopt|list|search|find|query|extract|extracting|retry|try|hit|ping|test)"
         r"\b[^.\n]{0,140}",
         re.IGNORECASE,
     )
@@ -2101,6 +2400,7 @@ async def stream_agent_loop(
 
     for round_num in range(1, max_rounds + 1):
         round_response = ""
+        _round_full_start = len(full_response)
         round_reasoning = ""  # reasoning_content deltas (DeepSeek-thinking, vLLM --reasoning-parser)
         native_tool_calls = []  # populated if model uses function calling
         # Reset doc streaming state per round
@@ -2328,6 +2628,66 @@ async def stream_agent_loop(
             # Intercept [DONE] — don't forward until all rounds finish
 
         tool_blocks, used_native = _resolve_tool_blocks(round_response, native_tool_calls, round_num, is_api_model=_is_api_model)
+        if not tool_blocks:
+            _recovered = _recover_email_url_extraction_tool_block(round_response, _retrieval_query)
+            if _recovered:
+                logger.info(
+                    "[agent] recovered bare UID JSON as %s for email URL extraction",
+                    _recovered.tool_type,
+                )
+                tool_blocks = [_recovered]
+                round_response = ""
+                full_response = full_response[:_round_full_start]
+
+        _email_url_workflow_active = _is_email_url_extraction_request(_retrieval_query)
+        if (
+            tool_blocks
+            and not _force_answer
+            and _email_url_workflow_active
+            and _email_url_extraction_succeeded(tool_events)
+        ):
+            logger.info("[agent] suppressing extra tool call after successful email URL extraction")
+            _force_answer = True
+            round_response = ""
+            full_response = full_response[:_round_full_start]
+            messages.append({
+                "role": "system",
+                "content": (
+                    "The email URL extraction has already succeeded. Do NOT call any more tools or switch topics. "
+                    "Answer the user's original request now from the latest `extract_email_urls` result. Prefer the "
+                    "`Likely tracking URL candidate(s)` section. If there are no candidates, output the non-static "
+                    "URLs from the extraction result."
+                ),
+            })
+            yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
+            continue
+
+        if (
+            tool_blocks
+            and not _force_answer
+            and _email_url_workflow_active
+            and _email_search_result_has_uid(tool_events)
+            and not _email_url_extraction_succeeded(tool_events)
+            and any(_tool_block_matches(block, "search_emails") for block in tool_blocks)
+            and not any(_tool_block_matches(block, "extract_email_urls") for block in tool_blocks)
+            and _intent_nudge_count < _MAX_INTENT_NUDGES
+        ):
+            _intent_nudge_count += 1
+            logger.info("[agent] blocked unrelated/repeated email search during URL extraction workflow")
+            round_response = ""
+            full_response = full_response[:_round_full_start]
+            messages.append({
+                "role": "system",
+                "content": (
+                    "The user's active request is still to extract the tracking URL from the email already found. "
+                    "A search result with UID/folder/account is already available above. Do NOT start a new email "
+                    "search or switch topics. Call `extract_email_urls` now with the UID, folder, and account from "
+                    "the chosen search result. If an earlier account value failed because it looked like "
+                    "`Name <email>`, retry with only the email address after `Account:`."
+                ),
+            })
+            yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
+            continue
 
         # Force-answer round: we told the model to STOP calling tools and
         # answer. If it ignored that and emitted a (possibly DSML) tool
@@ -2468,6 +2828,26 @@ async def stream_agent_loop(
             # tool doesn't pin us in a forever loop.
             _intent_text = _THINK_RE.sub("", cleaned_round).strip()
             _intent_match = _INTENT_RE.search(_intent_text) if _intent_text else None
+            if (
+                not guide_only
+                and _email_url_workflow_active
+                and _email_search_result_has_uid(tool_events)
+                and not _email_url_extraction_succeeded(tool_events)
+                and _intent_nudge_count < _MAX_INTENT_NUDGES
+            ):
+                _intent_nudge_count += 1
+                logger.info("[agent] nudging unfinished email URL extraction workflow on round %s", round_num)
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "The user asked to find an email and extract the tracking URL. You have search results "
+                        "with UID/folder/account, but `extract_email_urls` has not succeeded yet. Do NOT answer "
+                        "with a different email search or ask for more details. Call `extract_email_urls` now "
+                        "using the chosen UID, folder, and account from the search result."
+                    ),
+                })
+                yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
+                continue
             # Only nudge when the round REALLY looks like an unfinished
             # promise: short response (<400 chars), no fenced code/answer,
             # and an action-intent phrase was matched. Long answers that
@@ -2597,6 +2977,8 @@ async def stream_agent_loop(
         tool_results = []
         tool_result_texts = []  # plain text for native tool role messages
         budget_hit = False
+        _email_url_direct_answer = ""
+        _email_url_auto_extract_appended = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
             if max_tool_calls > 0 and total_tool_calls >= max_tool_calls:
@@ -2858,6 +3240,42 @@ async def stream_agent_loop(
             formatted = format_tool_result(desc, result)
             tool_results.append(formatted)
             tool_result_texts.append(formatted)
+            if (
+                _email_url_workflow_active
+                and _tool_block_matches(block, "search_emails")
+                and result.get("exit_code", 0) == 0
+            ):
+                _email_url_direct_answer = _email_url_final_answer_from_output(
+                    result.get("stdout") or result.get("output") or output_text
+                )
+                if _email_url_direct_answer:
+                    logger.info("[agent] finalizing email URL extraction directly after search output")
+                    break
+            if (
+                _email_url_workflow_active
+                and not _email_url_auto_extract_appended
+                and _tool_block_matches(block, "search_emails")
+                and result.get("exit_code", 0) == 0
+                and not any(_tool_block_matches(existing, "extract_email_urls") for existing in tool_blocks)
+            ):
+                extract_args = _email_extract_args_from_search_output(
+                    result.get("stdout") or result.get("output") or output_text
+                )
+                if extract_args:
+                    _email_url_auto_extract_appended = True
+                    logger.info("[agent] auto-appending extract_email_urls after email search result: %s", extract_args)
+                    tool_blocks.append(ToolBlock("mcp__email__extract_email_urls", json.dumps(extract_args)))
+            if (
+                _email_url_workflow_active
+                and _tool_block_matches(block, "extract_email_urls")
+                and result.get("exit_code", 0) == 0
+            ):
+                _email_url_direct_answer = _email_url_final_answer_from_output(
+                    result.get("stdout") or result.get("output") or output_text
+                )
+                if _email_url_direct_answer:
+                    logger.info("[agent] finalizing email URL extraction directly after extractor output")
+                    break
 
         # If budget was hit, stop the loop
         if budget_hit:
@@ -2868,6 +3286,12 @@ async def stream_agent_loop(
         # arrives as the next message and the agent resumes from there. The
         # question text is already in the streamed response, so it persists.
         if _awaiting_user:
+            break
+
+        if _email_url_direct_answer:
+            delta = ("\n\n" if full_response.strip() else "") + _email_url_direct_answer
+            full_response += delta
+            yield f'data: {json.dumps({"delta": delta})}\n\n'
             break
 
         # Feed results back to LLM for next round

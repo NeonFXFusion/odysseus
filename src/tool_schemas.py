@@ -1000,7 +1000,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "resolve_contact",
-            "description": "Look up a contact's email address by name. Searches CardDAV address book and sent email history. Use when the user says 'message [name]' or 'email [name]' without an email address.",
+            "description": "Look up a recipient contact's email address by name. Searches CardDAV address book and sent email history. Use before send_email only when the user wants to send/compose/message a person and gives only a name. Do not use to find existing messages/emails from a sender/company such as Amazon Prime or eBay; use search_emails for that.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1052,6 +1052,26 @@ FUNCTION_TOOL_SCHEMAS = [
                     "to": {"type": "string", "description": "Recipient email address"},
                     "subject": {"type": "string", "description": "Email subject line"},
                     "body": {"type": "string", "description": "Email body text"},
+                    "cc": {"type": "string", "description": "Optional CC email address(es), comma-separated"},
+                    "bcc": {"type": "string", "description": "Optional BCC email address(es), comma-separated"},
+                    "attachments": {
+                        "type": "array",
+                        "description": "Optional local files to attach. Pass chat upload IDs or allowed local paths.",
+                        "items": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "upload_id": {"type": "string"},
+                                        "filename": {"type": "string"},
+                                        "content_type": {"type": "string"},
+                                    },
+                                },
+                            ],
+                        },
+                    },
                     "account": {"type": "string", "description": "Optional account name/email/id from list_email_accounts, e.g. Gmail or user@example.com"},
                 },
                 "required": ["to", "subject", "body"]
@@ -1079,8 +1099,30 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "search_emails",
+            "description": "Search emails by sender, subject, and body text. Use this instead of listing many emails and filtering manually when the user asks to find existing mail from a person/company/sender, about a topic, invitation, order, invoice, or matching text. Use for requests like find Amazon Prime email; do not resolve the sender as a contact. Returns matching emails with UID, folder, and account for read_email/reply_to_email/extract_email_urls. For URL/link/tracking/package/delivery queries, include_urls is automatically enabled by the MCP server and each email result can include extracted_urls, url_details, and tracking_candidates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Free-text query to match sender, subject, or body"},
+                    "folders": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional IMAP folders to search. Defaults to INBOX, Sent, and Archive/All Mail.",
+                    },
+                    "max_results": {"type": "integer", "description": "Max total results after sorting newest first (default: 20)"},
+                    "include_urls": {"type": "boolean", "description": "Fetch matching message bodies and include extracted_urls, url_details, and tracking_candidates in each email result. Use when searching for links/tracking URLs."},
+                    "account": {"type": "string", "description": "Optional account name/email/id from list_email_accounts, e.g. Gmail or user@example.com"},
+                },
+                "required": ["query"],
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_email",
-            "description": "Read the full content of a specific email by UID.",
+            "description": "Read the full content of a specific email by UID. Returns body, attachments, and extracted URL metadata (extracted_urls, url_details, tracking_candidates).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1089,6 +1131,24 @@ FUNCTION_TOOL_SCHEMAS = [
                     "account": {"type": "string", "description": "Optional account name/email/id from list_email_accounts, especially when the UID came from a non-default mailbox"},
                 },
                 "required": ["uid"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_email_urls",
+            "description": "Extract HTTP/HTTPS URLs from an email body or a mailbox email by UID/Message-ID. Returns each URL labeled as alt text, button text, anchor text, or standalone url. Use directly after search_emails with UID/folder/account when the user asks for tracking/open links, buttons, or URLs inside an email; read_email is not required first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Email UID from search_emails/list_emails/read_email"},
+                    "message_id": {"type": "string", "description": "RFC Message-ID header value"},
+                    "folder": {"type": "string", "description": "IMAP folder (default: INBOX)"},
+                    "text": {"type": "string", "description": "Plain text email body to scan directly"},
+                    "html": {"type": "string", "description": "HTML email body to scan directly"},
+                    "account": {"type": "string", "description": "Optional account name/email/id from list_email_accounts, especially when the UID came from a non-default mailbox"},
+                },
             }
         }
     },
@@ -1104,6 +1164,24 @@ FUNCTION_TOOL_SCHEMAS = [
                     "body": {"type": "string", "description": "Reply body text"},
                     "folder": {"type": "string", "description": "IMAP folder (default: INBOX)"},
                     "account": {"type": "string", "description": "Optional account name/email/id from list_email_accounts, especially when the UID came from a non-default mailbox"},
+                    "attachments": {
+                        "type": "array",
+                        "description": "Optional local files to attach. Pass chat upload IDs or allowed local paths.",
+                        "items": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "upload_id": {"type": "string"},
+                                        "filename": {"type": "string"},
+                                        "content_type": {"type": "string"},
+                                    },
+                                },
+                            ],
+                        },
+                    },
                 },
                 "required": ["uid", "body"]
             }
@@ -1211,8 +1289,9 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         content = json.dumps(args) if args else "{}"
         return ToolBlock(tool_type, content)
     # Email tools are implemented as MCP — route them to email
-    _BUILTIN_EMAIL_TOOLS = {"list_email_accounts", "send_email", "list_emails", "read_email", "reply_to_email",
-                            "archive_email", "delete_email", "mark_email_read", "bulk_email", "download_attachment"}
+    _BUILTIN_EMAIL_TOOLS = {"list_email_accounts", "send_email", "list_emails", "search_emails", "read_email", "extract_email_urls",
+                            "reply_to_email", "archive_email", "delete_email", "mark_email_read", "bulk_email",
+                            "download_attachment"}
     if name in _BUILTIN_EMAIL_TOOLS:
         return ToolBlock(f"mcp__email__{name}", json.dumps(args) if args else "{}")
     if tool_type not in TOOL_TAGS:

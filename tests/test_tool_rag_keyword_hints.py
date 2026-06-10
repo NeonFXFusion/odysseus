@@ -15,7 +15,7 @@ These hints are deterministic string matching — no embeddings — so we can te
 from src.tool_index import ToolIndex, ALWAYS_AVAILABLE
 
 _EMAIL_TOOLS = {
-    "list_emails", "read_email", "send_email", "reply_to_email",
+    "list_emails", "search_emails", "read_email", "extract_email_urls", "send_email", "reply_to_email",
     "bulk_email", "delete_email", "archive_email", "mark_email_read",
 }
 
@@ -45,7 +45,32 @@ def test_genuine_email_query_still_gets_email_tools():
     keywords still force-include the toolset."""
     ti = _index_without_embeddings()
     tools = ti.get_tools_for_query("reply to the unread email in my inbox")
-    assert {"reply_to_email", "send_email", "read_email"} <= tools
+    assert {"reply_to_email", "send_email", "search_emails", "read_email"} <= tools
+
+
+def test_email_search_query_gets_search_tool():
+    """Named mail search should surface the server-side search tool, not force
+    the model to list recent messages and filter by hand."""
+    ti = _index_without_embeddings()
+    tools = ti.get_tools_for_query("search my email for EY invoice")
+    assert "search_emails" in tools
+
+
+def test_email_tracking_url_query_gets_email_url_tools_not_web():
+    """A URL requested from email content is local mailbox work, not web search."""
+    ti = _index_without_embeddings()
+    q = "Find ebay message from emails and extract the tracking url then output the url if url unknown output all urls"
+    tools = ti.get_tools_for_query(q, always_include={"__base__"})
+    assert {"search_emails", "extract_email_urls"} <= tools
+    assert "web_search" not in tools
+
+
+def test_find_company_email_surfaces_search_not_contact_resolution():
+    """A company/sender in an email search must not be treated as a contact."""
+    ti = _index_without_embeddings()
+    tools = ti.get_tools_for_query("Find Amazon Prime email invitation", always_include={"__base__"})
+    assert "search_emails" in tools
+    assert "resolve_contact" not in tools
 
 
 def test_plain_tell_request_stays_minimal():

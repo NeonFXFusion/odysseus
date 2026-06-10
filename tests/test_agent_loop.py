@@ -36,6 +36,15 @@ _IMPORTED_AGENT_LOOP = None
 try:
     from src.agent_loop import (
         _detect_admin_intent,
+        _classify_agent_request,
+        _is_email_url_extraction_request,
+        _is_mailbox_search_request,
+        _needs_contact_resolution_for_email,
+        _recover_email_url_extraction_tool_block,
+        _email_search_result_has_uid,
+        _email_url_extraction_succeeded,
+        _email_url_final_answer_from_output,
+        _email_extract_args_from_search_output,
         _compute_final_metrics,
         _append_tool_results,
         _MCP_KEYWORDS,
@@ -60,6 +69,135 @@ def test_import_stubs_do_not_leak_into_later_tests():
 
 def test_mcp_keyword_gate_matches_literal_mcp_requests():
     assert "mcp" in _MCP_KEYWORDS
+
+
+def test_email_tracking_url_request_classifies_as_email_not_web():
+    text = "Find ebay message from emails and extract the tracking url then output the url if url unknown output all urls"
+    intent = _classify_agent_request([{"role": "user", "content": text}], text)
+
+    assert _is_email_url_extraction_request(text) is True
+    assert "email" in intent["domains"]
+    assert "web" not in intent["domains"]
+
+
+def test_find_company_email_is_mailbox_search_not_contact_resolution():
+    text = "Find Amazon Prime email invitation"
+    intent = _classify_agent_request([{"role": "user", "content": text}], text)
+
+    assert _is_mailbox_search_request(text) is True
+    assert _needs_contact_resolution_for_email(text) is False
+    assert "email" in intent["domains"]
+    assert "web" not in intent["domains"]
+
+
+def test_send_email_to_named_person_needs_contact_resolution():
+    text = "send email to Chris about lunch"
+
+    assert _is_mailbox_search_request(text) is False
+    assert _needs_contact_resolution_for_email(text) is True
+
+
+def test_email_tracking_url_recovers_bare_uid_json_as_extractor_call():
+    query = "Find ebay message from emails and extract the tracking url"
+    raw = '{"account": "neon.uvled@gmail.com", "folder": "INBOX", "uid": "30546"}'
+
+    block = _recover_email_url_extraction_tool_block(raw, query)
+
+    assert block is not None
+
+
+def test_bare_uid_json_not_recovered_for_non_url_email_request():
+    query = "read the latest email"
+    raw = '{"account": "neon.uvled@gmail.com", "folder": "INBOX", "uid": "30546"}'
+
+    assert _recover_email_url_extraction_tool_block(raw, query) is None
+
+
+def test_email_url_workflow_detects_uid_search_and_extraction_success():
+    search_events = [{
+        "tool": "mcp__email__search_emails",
+        "output": "Found 1 email(s)\n   Folder: INBOX\n   UID: 30546\n   Account: neon.uvled@gmail.com",
+    }]
+    extract_events = search_events + [{
+        "tool": "mcp__email__extract_email_urls",
+        "output": "Subject: test\nFound 2 URL(s):\n- https://example.test",
+    }]
+
+    assert _email_search_result_has_uid(search_events) is True
+    assert _email_url_extraction_succeeded(search_events) is False
+    assert _email_url_extraction_succeeded(extract_events) is True
+
+
+def test_email_url_final_answer_prefers_tracking_candidates():
+    output = """Subject: OUT FOR DELIVERY
+UID: 30546
+Likely tracking URL candidate(s): 1
+- https://www.ebay.com/order/track?item=123 (a text: Track package)
+Found 59 URL(s):
+Other non-static URL(s): 1
+- https://www.ebay.com/start/shop (alt: eBay logo)
+Omitted 22 static asset/pixel URL(s)."""
+
+    assert _email_url_final_answer_from_output(output) == "https://www.ebay.com/order/track?item=123"
+
+
+def test_email_url_final_answer_reads_tracking_candidates_from_search_output():
+    output = """Found 1 email(s) matching "eBay package tracking":
+
+1. **Your package is now with its carrier!**
+   From: eBay (ebay@ebay.com)
+   Folder: INBOX
+   UID: 30535
+   Account: neon.uvled@gmail.com
+   Likely tracking URL candidate(s): 1
+   - https://www.ebay.com/order/track?item=123 (a text: Track package)
+   Found 1 URL(s):
+   Other non-static URL(s): 0"""
+
+    assert _email_url_final_answer_from_output(output) == "https://www.ebay.com/order/track?item=123"
+
+
+def test_email_url_final_answer_falls_back_to_non_static_urls():
+    output = """No obvious tracking URL candidate was detected; listing non-static URLs.
+- https://example.com/a (standalone url)
+- https://example.com/b (a text: Open)"""
+
+    assert _email_url_final_answer_from_output(output) == (
+        "Extracted URLs:\n"
+        "- https://example.com/a\n"
+        "- https://example.com/b"
+    )
+
+
+def test_email_extract_args_from_search_output_prefers_inbox_package_row():
+    output = """Found 2 email(s) matching "eBay package tracking":
+
+1. **Your package is now with its carrier!**
+   From: eBay (ebay@ebay.com)
+   Date: Mon, 8 Jun 2026 10:32:30 -0700
+   Folder: [Gmail]/All Mail
+   UID: 62565
+   Account: neon.uvled@gmail.com <neon.uvled@gmail.com>
+
+2. **Your package is now with its carrier!**
+   From: eBay (ebay@ebay.com)
+   Date: Mon, 8 Jun 2026 10:32:30 -0700
+   Folder: INBOX
+   UID: 30535
+   Account: neon.uvled@gmail.com"""
+
+    assert _email_extract_args_from_search_output(output) == {
+        "uid": "30535",
+        "folder": "INBOX",
+        "account": "neon.uvled@gmail.com",
+    }
+
+
+def test_explicit_web_url_request_still_classifies_as_web():
+    text = "open this url and tell me the title: https://example.com"
+    intent = _classify_agent_request([{"role": "user", "content": text}], text)
+
+    assert "web" in intent["domains"]
 
 
 # ---------------------------------------------------------------------------
