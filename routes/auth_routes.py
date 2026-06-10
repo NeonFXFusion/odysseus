@@ -617,6 +617,15 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
             raise HTTPException(404, "Integration not found")
         preset = (integ.get("preset") or integ.get("name", "")).lower()
 
+        if preset == "instagram_private":
+            try:
+                from mcp_servers.instagram_server import test_instagram_login
+                result = await asyncio.to_thread(test_instagram_login, integration_id)
+                label = result.get("username") or result.get("account") or integration_id
+                return {"ok": True, "message": f"Instagram login OK: {label}"}
+            except Exception as e:
+                return {"ok": False, "message": f"Instagram login failed: {e}"[:500]}
+
         # ntfy is special: a GET / proves the server is reachable but
         # publishes nothing, so the user has no way to know whether
         # subscribers will actually receive notifications. Instead, do

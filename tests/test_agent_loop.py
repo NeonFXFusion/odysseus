@@ -90,6 +90,14 @@ def test_find_company_email_is_mailbox_search_not_contact_resolution():
     assert "web" not in intent["domains"]
 
 
+def test_instagram_dm_search_classifies_as_instagram_not_web():
+    text = "Find instagram DM about package tracking and extract the url"
+    intent = _classify_agent_request([{"role": "user", "content": text}], text)
+
+    assert "instagram" in intent["domains"]
+    assert "web" not in intent["domains"]
+
+
 def test_send_email_to_named_person_needs_contact_resolution():
     text = "send email to Chris about lunch"
 

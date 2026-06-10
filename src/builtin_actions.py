@@ -2012,6 +2012,296 @@ async def action_check_email_urgency(owner: str, **kwargs) -> Tuple[str, bool]:
         return str(e), False
 
 
+async def action_check_instagram_urgency(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Classify recent Instagram DMs, cache tags, and remind on new urgent DMs."""
+    try:
+        import asyncio as _aio
+        import json as _json
+        import re as _re
+        import time as _time
+        from datetime import datetime as _dt
+        from pathlib import Path as _P
+
+        from mcp_servers.instagram_server import InstagramPrivateProvider, _load_accounts_raw
+        from src.endpoint_resolver import resolve_endpoint, resolve_utility_fallback_candidates
+        from src.instagram_tags import get_instagram_tag_rows, upsert_instagram_tag
+        from src.llm_core import llm_call_async_with_fallback
+        from src.settings import load_settings
+
+        rows = _load_accounts_raw()
+        if not rows:
+            raise TaskNoop("no Instagram accounts configured")
+
+        url, model, headers = resolve_endpoint("utility", owner=owner)
+        if not url or not model:
+            url, model, headers = resolve_endpoint("default", owner=owner)
+        if not url or not model:
+            return "No LLM endpoint available", False
+        candidates = [(url, model, headers)] + resolve_utility_fallback_candidates(owner=owner)
+
+        CATEGORY_TAGS = {
+            "work", "personal", "social", "shopping", "finance", "travel",
+            "security", "support", "notification", "marketing", "spam",
+        }
+        MANAGED_TAGS = CATEGORY_TAGS | {"urgent", "reply-soon"}
+        max_threads = int(kwargs.get("max_threads") or 30)
+        max_messages_per_thread = int(kwargs.get("max_messages_per_thread") or 20)
+        settings = load_settings()
+        prompt_rules = settings.get("urgent_instagram_prompt") or settings.get("urgent_email_prompt") or ""
+
+        scored: dict[str, dict] = {}
+        scanned = 0
+        classified = 0
+        failed = []
+        model_used = model
+
+        for row in rows:
+            provider = InstagramPrivateProvider(account=row.get("id"))
+            account_id = str(provider.account.get("id") or row.get("id") or "")
+            account_username = str(provider.account.get("username") or "").lstrip("@").lower()
+            cached = {
+                (str(r.get("thread_id") or ""), str(r.get("message_id") or "")): r
+                for r in get_instagram_tag_rows(owner=owner or "", account_id=account_id)
+            }
+            try:
+                threads = await _aio.to_thread(provider.list_threads, max_threads)
+            except Exception as exc:
+                failed.append({"subject": provider.account_label(), "reason": str(exc)[:160]})
+                continue
+
+            for thread in threads or []:
+                messages = thread.get("messages") or []
+                if len(messages) < min(5, max_messages_per_thread):
+                    try:
+                        full = await _aio.to_thread(
+                            provider.read_thread,
+                            thread.get("thread_id"),
+                            max_messages_per_thread,
+                        )
+                        messages = full.get("messages") or messages
+                        thread = {**thread, **full}
+                    except Exception:
+                        pass
+                for msg in messages[:max_messages_per_thread]:
+                    text = str(msg.get("text") or "").strip()
+                    message_id = str(msg.get("message_id") or "").strip()
+                    thread_id = str(msg.get("thread_id") or thread.get("thread_id") or "").strip()
+                    sender = str(msg.get("from_username") or msg.get("from_user_id") or "").strip()
+                    if not text or not message_id or not thread_id:
+                        continue
+                    if sender.lower().lstrip("@") == account_username:
+                        continue
+                    scanned += 1
+                    key = f"{account_id}:{thread_id}:{message_id}"
+                    cached_row = cached.get((thread_id, message_id))
+                    if cached_row:
+                        scored[key] = {
+                            "score": int(cached_row.get("score") or 0),
+                            "tags": cached_row.get("tags") or [],
+                            "reason": cached_row.get("reason") or "",
+                            "thread_title": cached_row.get("thread_title") or thread.get("thread_title") or "",
+                            "from": cached_row.get("username") or sender,
+                            "text": cached_row.get("text_preview") or text[:500],
+                            "thread_id": thread_id,
+                            "message_id": message_id,
+                            "account_id": account_id,
+                        }
+                        continue
+
+                    llm_prompt = (
+                        "You are triaging ONE Instagram DM. Return ONLY JSON: "
+                        "{\"score\":0|1|2|3,\"tags\":[\"...\"],\"spam\":false,"
+                        "\"reason\":\"one short phrase\"}.\n"
+                        "0 = casual/trivial/no action · 1 = informational · "
+                        "2 = should reply within a day · 3 = urgent, reply now.\n\n"
+                        "Allowed tags: work, personal, social, shopping, finance, travel, "
+                        "security, support, notification, marketing, spam.\n"
+                        "Use spam=true for scams, phishing, cold sales, generic ads, or junk.\n\n"
+                        f"User's rules:\n{prompt_rules}\n\n"
+                        f"Thread: {thread.get('thread_title') or ''}\n"
+                        f"From: {sender}\n"
+                        f"Message:\n{text[:2000]}\n"
+                    )
+                    try:
+                        raw = await llm_call_async_with_fallback(
+                            candidates,
+                            [{"role": "user", "content": llm_prompt}],
+                            temperature=0.1,
+                            max_tokens=220,
+                            timeout=30,
+                        )
+                        txt = (raw or "").strip()
+                        if txt.startswith("```"):
+                            txt = txt.strip("`")
+                            nl = txt.find("\n")
+                            if nl >= 0:
+                                txt = txt[nl + 1:]
+                        s = txt.find("{")
+                        e = txt.rfind("}")
+                        if s < 0 or e <= s:
+                            raise ValueError("model returned no JSON")
+                        obj = _json.loads(txt[s:e + 1])
+                        score = max(0, min(3, int(obj.get("score", 0))))
+                        tags = []
+                        if score >= 3:
+                            tags.append("urgent")
+                        elif score >= 2:
+                            tags.append("reply-soon")
+                        raw_tags = obj.get("tags") or []
+                        if isinstance(raw_tags, str):
+                            raw_tags = [raw_tags]
+                        for tag in raw_tags:
+                            tag = str(tag or "").strip().lower().replace("_", "-")
+                            if tag == "promo":
+                                tag = "marketing"
+                            if tag in MANAGED_TAGS and tag not in tags:
+                                tags.append(tag)
+                        spam_raw = obj.get("spam")
+                        spam = spam_raw if isinstance(spam_raw, bool) else str(spam_raw or "").lower() in {"1", "true", "yes"}
+                        if spam and "spam" not in tags:
+                            tags.append("spam")
+                        if _re.search(r"\b(waiting outside|at the door|locked out|can't get in|cannot get in|urgent|asap)\b", text, _re.I):
+                            if score < 3:
+                                score = 3
+                                if "urgent" not in tags:
+                                    tags.insert(0, "urgent")
+                        verdict = {
+                            "score": score,
+                            "tags": tags[:5],
+                            "reason": str(obj.get("reason") or "")[:200],
+                            "thread_title": thread.get("thread_title") or "",
+                            "from": sender,
+                            "text": text[:500],
+                            "thread_id": thread_id,
+                            "message_id": message_id,
+                            "account_id": account_id,
+                        }
+                        upsert_instagram_tag({
+                            "account_id": account_id,
+                            "owner": owner or "",
+                            "thread_id": thread_id,
+                            "message_id": message_id,
+                            "thread_title": verdict["thread_title"],
+                            "username": sender,
+                            "text_preview": verdict["text"],
+                            "tags": verdict["tags"],
+                            "score": verdict["score"],
+                            "reason": verdict["reason"],
+                            "model_used": model_used,
+                        })
+                        scored[key] = verdict
+                        classified += 1
+                    except Exception as exc:
+                        failed.append({
+                            "subject": thread.get("thread_title") or thread_id,
+                            "from": sender,
+                            "reason": str(exc)[:140],
+                        })
+
+        if scanned == 0:
+            raise TaskNoop("no recent incoming Instagram DMs")
+
+        owner_slug = "".join(c if (c.isalnum() or c in "-_.@") else "_" for c in (owner or "default"))
+        state_path = _P(DATA_DIR) / f"instagram_urgency_state_{owner_slug}.json"
+        try:
+            prior = _json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        except Exception:
+            prior = {}
+        notified = set(prior.get("notified_keys") or [])
+        urgent_keys = [k for k, v in scored.items() if int(v.get("score") or 0) >= 2]
+        new_urgent = [k for k in urgent_keys if k not in notified]
+        delivered = set()
+        notify_failed = set()
+        if new_urgent:
+            sorted_urgent = sorted(
+                ((k, scored[k]) for k in urgent_keys),
+                key=lambda kv: int(kv[1].get("score") or 0),
+                reverse=True,
+            )[:10]
+            body_lines = [
+                f"{len(urgent_keys)} Instagram DM" + ("" if len(urgent_keys) == 1 else "s") + " need attention:",
+                "",
+            ]
+            for idx, (key, item) in enumerate(sorted_urgent, 1):
+                title = item.get("thread_title") or item.get("thread_id") or "Instagram DM"
+                sender = item.get("from") or ""
+                reason = item.get("reason") or ""
+                body_lines.append(f"{idx}. {title}" + (f" — {sender}" if sender else "") + (f" · {reason}" if reason else ""))
+                body_lines.append(f"   Open thread: #instagram-{item.get('thread_id')}")
+            try:
+                from routes.note_routes import dispatch_reminder
+                result = await dispatch_reminder(
+                    title="Urgent Instagram DM" if len(urgent_keys) == 1 else f"{len(urgent_keys)} urgent Instagram DMs",
+                    note_body="\n".join(body_lines),
+                    note_id="urgent-instagram",
+                    owner=owner or "",
+                )
+                channel = (settings.get("reminder_channel") or "browser").strip().lower()
+                ok = bool(result.get("browser_sent"))
+                if channel == "email":
+                    ok = bool(result.get("email_sent"))
+                elif channel == "ntfy":
+                    ok = bool(result.get("ntfy_sent"))
+                elif channel == "webhook":
+                    ok = bool(result.get("webhook_sent"))
+                if ok:
+                    delivered.update(new_urgent)
+                    notified.update(new_urgent)
+                else:
+                    notify_failed.update(new_urgent)
+            except Exception:
+                notify_failed.update(new_urgent)
+
+        notified = {key for key in notified if key in scored}
+        try:
+            state_path.write_text(_json.dumps({
+                "ts": _time.time(),
+                "owner": owner or "",
+                "notified_keys": sorted(notified),
+                "urgent_keys": urgent_keys,
+            }), encoding="utf-8")
+        except Exception:
+            pass
+
+        tier_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+        for verdict in scored.values():
+            tier_counts[int(verdict.get("score") or 0)] += 1
+        head = (
+            f"scanned {scanned} · urgent {tier_counts[3]} · "
+            f"reply-soon {tier_counts[2]} · info {tier_counts[1]} · trivial {tier_counts[0]} · "
+            f"{classified} saved classifications"
+        )
+        if delivered:
+            head += f" · notified {len(delivered)}"
+        if notify_failed:
+            head += f" · notify failed {len(notify_failed)}"
+        lines = [head]
+        for tier, label in ((3, "Urgent"), (2, "Reply soon"), (1, "Informational"), (0, "Trivial")):
+            items = [v for v in scored.values() if int(v.get("score") or 0) == tier]
+            if not items:
+                continue
+            lines.append("")
+            lines.append(f"**{label} ({len(items)}):**")
+            for item in items[:8]:
+                line = f"- **{(item.get('thread_title') or item.get('thread_id') or 'Instagram DM')[:80]}**"
+                if item.get("from"):
+                    line += f" — _{item['from']}_"
+                if item.get("reason"):
+                    line += f" — {item['reason']}"
+                lines.append(line)
+        if failed:
+            lines.append("")
+            lines.append(f"**Unclassified ({len(failed)}):**")
+            for item in failed[:8]:
+                lines.append(f"- **{item.get('subject') or 'Instagram DM'}** — {item.get('reason') or 'failed'}")
+        return "\n".join(lines), True
+    except TaskNoop:
+        raise
+    except Exception as e:
+        logger.exception("check_instagram_urgency action failed")
+        return str(e), False
+
+
 async def action_cookbook_serve(
     owner: str,
     task_name: str = "",
@@ -2222,6 +2512,7 @@ BUILTIN_ACTIONS = {
     "test_skills": action_test_skills,
     "audit_skills": action_audit_skills,
     "check_email_urgency": action_check_email_urgency,
+    "check_instagram_urgency": action_check_instagram_urgency,
     "cookbook_serve": action_cookbook_serve,
     # ping_notes removed from the registry — runs only inside `_note_pings_loop`.
 }
@@ -2243,4 +2534,5 @@ BUILTIN_ACTION_INFO = {
     "test_skills": "Run the per-skill Test on every skill: agent run + LLM judge → records verdict on the skill (pass/needs_work/fail/inconclusive). Advisory only — never rewrites or demotes anything.",
     "audit_skills": "Audit unaudited skills after enough new skills are added: test, narrow metadata, self-edit/retry, optional teacher rewrite, tag duplicates/trivial skills, and publish/draft using the auto-approve threshold.",
     "check_email_urgency": "Scan unread emails hourly, tag urgent/reply-soon/newsletter/marketing/spam, and send a reminder when a new email needs a fast reply.",
+    "check_instagram_urgency": "Scan recent Instagram DMs hourly, tag urgent/reply-soon/social/work/spam, and send a reminder when a new DM needs a fast reply.",
 }

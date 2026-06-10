@@ -150,6 +150,17 @@ INTEGRATION_PRESETS: Dict[str, Dict[str, Any]] = {
             "  GET /api/greader.php/reader/api/0/unread-count?output=json — unread counts"
         ),
     },
+    "instagram_private": {
+        "name": "Instagram",
+        "auth_type": "none",
+        "description": (
+            "Instagram private API provider for local MCP tools. Used by the built-in Instagram MCP server "
+            "to list/search/read Direct Messages and send DMs with optional image/video attachments. "
+            "This uses the unofficial instagrapi private API library; Instagram may challenge, rate-limit, "
+            "or block automation sessions. Store the username in the integration fields and credentials in "
+            "the encrypted secret field."
+        ),
+    },
 }
 
 # ---------------------------------------------------------------------------

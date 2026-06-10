@@ -93,3 +93,19 @@ def test_email_native_tools_route_to_email_mcp():
     assert block is not None
     assert block.tool_type == "mcp__email__search_emails"
     assert json.loads(block.content) == {"query": "invoice"}
+
+
+def test_instagram_native_tools_route_to_instagram_mcp():
+    """Instagram function-call tools are implemented by the instagram MCP server."""
+    names = {schema["function"]["name"] for schema in FUNCTION_TOOL_SCHEMAS}
+    assert {"search_instagram_messages", "send_instagram_message"} <= names
+
+    block = function_call_to_tool_block("search_instagram_messages", json.dumps({"query": "tracking link"}))
+    assert block is not None
+    assert block.tool_type == "mcp__instagram__search_instagram_messages"
+    assert json.loads(block.content) == {"query": "tracking link"}
+
+    block = function_call_to_tool_block("send_instagram_message", json.dumps({"username": "alice", "text": "hi"}))
+    assert block is not None
+    assert block.tool_type == "mcp__instagram__send_instagram_message"
+    assert json.loads(block.content) == {"username": "alice", "text": "hi"}

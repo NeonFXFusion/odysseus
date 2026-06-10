@@ -22,6 +22,7 @@ import voiceRecorderModule from './js/voiceRecorder.js';
 import censorModule from './js/censor.js';
 import galleryModule from './js/gallery.js';
 import tasksModule from './js/tasks.js';
+import instagramModule from './js/instagramPanel.js';
 import calendarModule from './js/calendar.js';
 import notesModule from './js/notes.js';
 import adminModule from './js/admin.js';
@@ -553,7 +554,7 @@ function initializeEventListeners() {
       };
 
       // Dynamic modals (removed from DOM on close)
-      const dynamicModals = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal', 'email-lib-modal'];
+      const dynamicModals = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal', 'email-lib-modal', 'instagram-modal'];
       for (const id of dynamicModals) {
         const m = document.getElementById(id);
         if (id === 'gallery-modal') {
@@ -601,7 +602,7 @@ function initializeEventListeners() {
     'memory-modal': null,
     'theme-modal': null,
   };
-  const _dynamicModalIds = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal'];
+  const _dynamicModalIds = ['library-modal', 'archive-modal', 'doclib-modal', 'gallery-modal', 'tasks-modal', 'instagram-modal'];
   function dismissModal(modal) {
     if (!modal || modal.classList.contains('hidden')) return;
     if (modal.id === 'gallery-modal') {
@@ -1039,6 +1040,11 @@ function initializeEventListeners() {
       requestAnimationFrame(_goFullscreen);
       setTimeout(_goFullscreen, 50);
       setTimeout(_goFullscreen, 200);
+    },
+    '/instagram': () => {
+      _collapseSidebarToRail();
+      try { document.getElementById('rail-new-session')?.click(); } catch (_) {}
+      if (instagramModule && instagramModule.openInstagramPanel) instagramModule.openInstagramPanel();
     },
     '/memory':   () => document.getElementById('tool-memory-btn')?.click(),
     '/gallery':  () => document.getElementById('tool-gallery-btn')?.click(),
@@ -2397,6 +2403,7 @@ function initializeEventListeners() {
     'sidebar-search':      '#sidebar-search-btn',
     'sessions-section':    '#sessions-section',
     'email-section':       '#email-section',
+    'instagram-section':   '#instagram-section',
     'models-section':      '#models-section',
     'tools-section':       '#tools-section',
     // Per-tool visibility — fine-grained control over which entries show
@@ -3405,6 +3412,9 @@ function startOdysseusApp() {
   if (searchChatModule) {
     searchChatModule.init(API_BASE);
   }
+  if (instagramModule) {
+    instagramModule.init(API_BASE);
+  }
 
   // Search buttons — icon rail + sidebar
   const railSearchBtn = el('rail-search-btn');
@@ -3427,6 +3437,7 @@ function startOdysseusApp() {
     'rail-memory':    'tool-memory-btn',
     'rail-theme':     'tool-theme-btn',
     'rail-email':     'email-section-title',
+    'rail-instagram': 'instagram-section-title',
   };
   Object.entries(_railToolMap).forEach(([railId, toolId]) => {
     const railBtn = el(railId);
@@ -3486,7 +3497,7 @@ function startOdysseusApp() {
   }
 
   // Sync the contextual rail icons. Tool launchers (calendar/compare/cookbook/
-  // research/gallery/tasks/archive/memory/notes/theme/email) are now
+  // research/gallery/tasks/archive/memory/notes/theme/email/instagram) are now
   // always-visible launchers, so only the doc + background-chat indicators
   // are shown/hidden dynamically here.
   function _syncRailDynamic() {

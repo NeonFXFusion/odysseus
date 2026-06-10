@@ -261,6 +261,12 @@ _MCP_TOOL_MAP = {
     "web_search":     ("web_search", "web_search"),
     "web_fetch":      ("web_fetch",  "web_fetch"),
     "generate_image": ("image_gen",  "generate_image"),
+    "list_instagram_accounts":   ("instagram", "list_instagram_accounts"),
+    "list_instagram_threads":    ("instagram", "list_instagram_threads"),
+    "search_instagram_messages": ("instagram", "search_instagram_messages"),
+    "read_instagram_thread":     ("instagram", "read_instagram_thread"),
+    "extract_instagram_urls":    ("instagram", "extract_instagram_urls"),
+    "send_instagram_message":    ("instagram", "send_instagram_message"),
 }
 
 
@@ -294,6 +300,14 @@ def _parse_manage_memory(content: str) -> Dict:
     return args
 
 
+def _parse_json_args(content: str) -> Dict:
+    try:
+        value = json.loads(str(content or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _parse_write_file(content: str) -> Dict:
     lines = content.split("\n", 1)
     return {"path": lines[0].strip(), "content": lines[1] if len(lines) > 1 else ""}
@@ -308,6 +322,12 @@ _MCP_ARG_PARSERS: Dict[str, Callable[[str], Dict[str, str]]] = {
     "write_file":     _parse_write_file,
     "generate_image": _parse_generate_image,
     "manage_memory":  _parse_manage_memory,
+    "list_instagram_accounts":   _parse_json_args,
+    "list_instagram_threads":    _parse_json_args,
+    "search_instagram_messages": _parse_json_args,
+    "read_instagram_thread":     _parse_json_args,
+    "extract_instagram_urls":    _parse_json_args,
+    "send_instagram_message":    _parse_json_args,
 }
 
 

@@ -212,6 +212,7 @@ HOUSEKEEPING_DEFAULTS = {
     "extract_email_events": {"name": "Email Calendar Events",    "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 */1 * * *", "ship_paused": True, "legacy_names": ["Email → Calendar Events"]},
     "classify_events":      {"name": "Calendar Classify Events", "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 6,18 * * *", "ship_paused": True, "legacy_names": ["Classify Calendar Events"]},
     "check_email_urgency":   {"name": "Email Tags",               "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 * * * *", "ship_paused": True, "old_cron_expressions": ["*/15 * * * *"], "legacy_names": ["Email Triage", "Urgent Email"]},
+    "check_instagram_urgency": {"name": "Instagram Tags",          "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 * * * *", "ship_paused": True, "legacy_names": ["Instagram Triage", "Urgent Instagram"]},
     "audit_skills":          {"name": "Skills Audit",             "trigger_type": "event", "trigger_event": "skill_added", "trigger_count": 5, "schedule": None, "scheduled_time": None, "cron_expression": None, "legacy_names": ["Audit Skills"]},
 }
 
@@ -950,6 +951,7 @@ class TaskScheduler:
     # Activity log + reminder email already carry everything the user needs.
     _SILENT_ACTIONS = frozenset({
         "check_email_urgency",
+        "check_instagram_urgency",
         "learn_sender_signatures",
         "summarize_emails",
         "draft_email_replies",
@@ -970,6 +972,7 @@ class TaskScheduler:
         "classify_events",
         "learn_sender_signatures",
         "check_email_urgency",
+        "check_instagram_urgency",
         "test_skills",
         "audit_skills",
         "consolidate_memory",

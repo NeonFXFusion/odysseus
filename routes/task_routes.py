@@ -592,6 +592,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             "extract_email_events": ("email_calendar_extractions",),
             "learn_sender_signatures": ("sender_signatures",),
             "check_email_urgency": ("email_tags", "email_urgency_alerts"),
+            "check_instagram_urgency": ("instagram_tags",),
         }
         tables = cache_tables.get(action)
         if not tables:
@@ -641,6 +642,15 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                         pass
             owner_slug = "".join(c if (c.isalnum() or c in "-_.@") else "_" for c in (user or "default"))
             for state_path in [Path(DATA_DIR) / f"email_urgency_state_{owner_slug}.json"]:
+                try:
+                    if state_path.exists():
+                        state_path.unlink()
+                        removed_files += 1
+                except Exception:
+                    pass
+        elif action == "check_instagram_urgency":
+            owner_slug = "".join(c if (c.isalnum() or c in "-_.@") else "_" for c in (user or "default"))
+            for state_path in [Path(DATA_DIR) / f"instagram_urgency_state_{owner_slug}.json"]:
                 try:
                     if state_path.exists():
                         state_path.unlink()

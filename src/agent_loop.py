@@ -85,6 +85,7 @@ _AGENT_RULES = """\
 - Email search: when the user asks to find/search/look up mail by person, company, topic, invoice/order/thread, or text, use `search_emails` instead of listing recent mail and filtering manually.
 - Do not use `resolve_contact` to find messages from companies/senders like Amazon Prime, eBay, banks, stores, newsletters, or services. `resolve_contact` is only for finding a recipient address before sending a new email.
 - Email URL extraction: when the user asks to find a message/email and extract/output a tracking URL/link, use `search_emails`; tracking/link queries return `extracted_urls`, `url_details`, and `tracking_candidates` on the email rows when available. If the search result already has `Likely tracking URL candidate(s)`, answer from that. Otherwise call `extract_email_urls` with the UID/folder/account. Do NOT use `web_search`.
+- Instagram DMs: when the user asks to find/search/read Instagram/IG DMs or messages, use `search_instagram_messages`, `list_instagram_threads`, or `read_instagram_thread`; do NOT use browser/web search. For Instagram URL/link/tracking requests, use `search_instagram_messages` first because results include `extracted_urls`, `url_details`, and `tracking_candidates`.
 - Multiple email accounts: if tool output says "Other accounts" or the user asks "my Gmail?", "other inbox?", "work mail?", "custom domain mail?", or names any mailbox/account, DO NOT answer from memory. Call `list_email_accounts` if needed, then call `list_emails`/`search_emails`/`read_email`/`bulk_email` with the exact `account` value for that mailbox. Account names are user-defined labels; if the user typo-matches a known account, use the closest listed account instead of claiming it does not exist. NEVER use `app_api` or `/api/email/accounts` to discover email accounts; that route is owner-filtered in tool context and can falsely return empty.
 - User identity facts/preferences ("my name is <name>", "I live in <place>", "I prefer concise replies", "call me <name>") → use `manage_memory` with action=add. NEVER use `manage_contact` for facts about the user unless the user explicitly says to create/update a contact and provides contact details such as an email or phone.
 - "Create/add/write a note" / "notes" / "todos" / "remind me to X at <time>" → use `manage_notes`. Do NOT store notes in `manage_memory`; memory is for persistent facts/preferences about the user, not note content. For reminders, include a `due_date`; for todos, use `note_type=checklist` when appropriate.
@@ -97,6 +98,7 @@ _AGENT_RULES = """\
   - Notes: `[Title](#note-<id>)`
   - Gallery images: `[Caption](#image-<id>)`
   - Emails (use the UID from list_emails/search_emails/read_email output): `[Subject](#email-<uid>)`
+  - Instagram DM threads (use the thread_id from list_instagram_threads/search_instagram_messages/read_instagram_thread output): `[Thread](#instagram-<thread_id>)`
   - Calendar events (use the uid from manage_calendar): `[Summary](#event-<uid>)` — opens the calendar on that day
   - Tasks: `[Task name](#task-<id>)`
   - Skills: `[skill-name](#skill-<name>)`
@@ -132,7 +134,7 @@ _API_AGENT_RULES = """\
 - "Create/add/write a note" / "notes" / "todos" / "remind me to X at <time>" → use `manage_notes`. Do NOT store notes in `manage_memory`; memory is for persistent facts/preferences about the user, not note content. For reminders, include a `due_date`; for todos, use `note_type=checklist` when appropriate. `manage_tasks` is for RECURRING background AI jobs, NOT for one-off user reminders.
 - "Disable/turn off/enable/turn on <tool>" (shell, search, research, browser, documents, incognito, etc.) → call `ui_control` with `toggle <name> <on|off>`. Aliases accepted: shell→bash, search→web, deepresearch→research, documents→document_editor. NEVER record this as a memory — the user wants the toggle flipped, not a note about preferring it.
 - "Research X" / "do research on X" / "look into Y" / "deep dive on Z" → call `trigger_research` with `topic`. This starts a live job that appears in the Deep Research sidebar (streams progress + final report). **Do NOT use `web_search` for these** — saw the agent do a plain web_search for "do research on X" when the user wanted the deep-research job. "research X" is a deep-research request, not a quick lookup. (web_search is only for a single quick fact mid-task.) Do NOT POST /api/research/start via app_api either — blocked. After starting, tell the user it's running in the Deep Research sidebar. Only if the user explicitly wants it inline/quick should you fall back to web_search.
-- "Open/show <panel>" (documents, library, gallery, email, inbox, sessions, brain/memories, skills, settings, notes, cookbook) → call `ui_control` with `open_panel <name>`. Panel aliases: library/doc/docs/document→documents, images→gallery, mail/inbox/emails→email, chats/history→sessions, memory/memories→brain, preferences→settings, models/serve/serving→cookbook. CRITICAL: "open memory/memories/brain" / "open skills" / "open notes" / "open documents" / "open cookbook" means OPEN THE PANEL — call `ui_control`, NOT a manage/list tool. The "manage_*" tools list contents in chat; `ui_control open_panel` opens the visual modal the user is asking for.
+- "Open/show <panel>" (documents, library, gallery, email, inbox, instagram/ig/dms, sessions, brain/memories, skills, settings, notes, cookbook) → call `ui_control` with `open_panel <name>`. Panel aliases: library/doc/docs/document→documents, images→gallery, mail/inbox/emails→email, instagram/insta/ig/dm/dms→instagram, chats/history→sessions, memory/memories→brain, preferences→settings, models/serve/serving→cookbook. CRITICAL: "open memory/memories/brain" / "open skills" / "open notes" / "open documents" / "open cookbook" / "open instagram" means OPEN THE PANEL — call `ui_control`, NOT a manage/list tool. The "manage_*" tools list contents in chat; `ui_control open_panel` opens the visual modal the user is asking for.
 - "Open/start a reply", "open a reply to <sender>", "draft a reply window" for email → find/read the email if needed, then call `ui_control` with `open_email_reply <uid> <folder> reply`. This opens the same email document compose window as clicking Reply in the Email UI. Do NOT call `reply_to_email` unless the user explicitly gave body text and wants to SEND immediately.
 - Bulk email actions ("delete all those", "archive these", "mark all read") require a real email tool call. Use `bulk_email` once with UIDs from the latest `list_emails` result and the same `account`; never claim success without the tool result.
 - Email UIDs are the values after `UID:` in tool output, not list row numbers. For example, row `1.` with `UID: 90186` must use `"90186"`, never `"1"`.
@@ -141,6 +143,7 @@ _API_AGENT_RULES = """\
 - Email search: when the user asks to find/search/look up mail by person, company, topic, invoice/order/thread, or text, use `search_emails` instead of listing recent mail and filtering manually.
 - Do not use `resolve_contact` to find messages from companies/senders like Amazon Prime, eBay, banks, stores, newsletters, or services. `resolve_contact` is only for finding a recipient address before sending a new email.
 - Email URL extraction: when the user asks to find a message/email and extract/output a tracking URL/link, use `search_emails`; tracking/link queries return `extracted_urls`, `url_details`, and `tracking_candidates` on the email rows when available. If the search result already has `Likely tracking URL candidate(s)`, answer from that. Otherwise call `extract_email_urls` with the UID/folder/account. Do NOT use `web_search`.
+- Instagram DMs: when the user asks to find/search/read Instagram/IG DMs or messages, use `search_instagram_messages`, `list_instagram_threads`, or `read_instagram_thread`; do NOT use browser/web search. For Instagram URL/link/tracking requests, use `search_instagram_messages` first because results include `extracted_urls`, `url_details`, and `tracking_candidates`.
 - Multiple email accounts: if tool output says "Other accounts" or the user asks "my Gmail?", "other inbox?", "work mail?", "custom domain mail?", or names any mailbox/account, DO NOT answer from memory or infer it is the same inbox. Call `list_email_accounts` if needed, then call `list_emails`/`search_emails`/`read_email`/`bulk_email` with the exact `account` value for that mailbox. Account names are user-defined labels; if the user typo-matches a known account, use the closest listed account instead of claiming it does not exist. NEVER use `app_api` or `/api/email/accounts` to discover email accounts; that route is owner-filtered in tool context and can falsely return empty.
 - User identity facts/preferences ("my name is <name>", "I live in <place>", "I prefer concise replies", "call me <name>") → use `manage_memory` with action=add. NEVER use `manage_contact` for facts about the user unless the user explicitly says to create/update a contact and provides contact details such as an email or phone.
 - You are running INSIDE Odysseus — there is no OpenWebUI, ChatGPT, or external chat backend to query. All chats/sessions live in THIS app and are accessed via `list_sessions` (or `manage_session` with `action=list`), and deleted via `manage_session` with `action=delete`. Do NOT shell out to find sqlite files, curl localhost:8080, or grep for routers — those don't exist here. If `list_sessions` returns rows, that IS the source of truth.
@@ -168,6 +171,7 @@ _API_AGENT_RULES = """\
   - Notes: `[Title](#note-<id>)`
   - Gallery images: `[Caption](#image-<id>)`
   - Emails (use the UID from list_emails/search_emails/read_email output): `[Subject](#email-<uid>)`
+  - Instagram DM threads (use the thread_id from list_instagram_threads/search_instagram_messages/read_instagram_thread output): `[Thread](#instagram-<thread_id>)`
   - Calendar events (use the uid from manage_calendar): `[Summary](#event-<uid>)` — opens the calendar on that day
   - Tasks: `[Task name](#task-<id>)`
   - Skills: `[skill-name](#skill-<name>)`
@@ -239,6 +243,12 @@ _DOMAIN_RULES = {
 - For named mailboxes/accounts, call `list_email_accounts` if needed and pass the exact `account` value.
 - Bulk email actions use `bulk_email` once with explicit UIDs; do not loop one message at a time.
 - "Open/start a reply" means open a draft via `ui_control open_email_reply`; only `reply_to_email` when the user clearly wants to send now.""",
+    "instagram": """\
+## Instagram rules
+- Instagram/IG DMs are local tool workflows. Use `search_instagram_messages`, `list_instagram_threads`, or `read_instagram_thread`; do not use web_search/browser for DMs.
+- Search Instagram DMs with `search_instagram_messages` instead of listing threads and filtering manually.
+- For Instagram URL/link/tracking requests, search Instagram messages first; results include `extracted_urls`, `url_details`, and `tracking_candidates`.
+- For sending DMs, use `send_instagram_message` with `thread_id`, `username`, or `user_id`. Use `list_instagram_accounts` when the user names a specific IG account.""",
     "cookbook": """\
 ## Cookbook/model-serving rules
 - Cookbook is the LLM-serving subsystem.
@@ -254,7 +264,7 @@ _DOMAIN_RULES = {
 - Recurring/automatic/scheduled requests create a `manage_tasks` task; do not just perform the action once.""",
     "ui": """\
 ## UI rules
-- "Open/show <panel>" uses `ui_control open_panel <name>`.
+- "Open/show <panel>" uses `ui_control open_panel <name>`; Instagram/IG/DM requests map to `open_panel instagram`.
 - Tool toggles like "turn off shell/search/research" use `ui_control toggle <name> <on|off>`, not memory.""",
     "sessions": """\
 ## Chat/session rules
@@ -276,6 +286,7 @@ _DOMAIN_TOOL_MAP = {
     "web": {"web_search", "web_fetch", "trigger_research", "manage_research"},
     "documents": {"create_document", "edit_document", "update_document", "suggest_document", "manage_documents"},
     "email": {"list_email_accounts", "list_emails", "search_emails", "read_email", "extract_email_urls", "send_email", "reply_to_email", "bulk_email", "archive_email", "delete_email", "mark_email_read"},
+    "instagram": {"list_instagram_accounts", "list_instagram_threads", "search_instagram_messages", "read_instagram_thread", "extract_instagram_urls", "send_instagram_message"},
     "cookbook": {"download_model", "serve_model", "serve_preset", "list_serve_presets", "list_served_models", "stop_served_model", "tail_serve_output", "list_downloads", "cancel_download", "search_hf_models", "list_cached_models", "list_cookbook_servers", "adopt_served_model"},
     "notes_calendar_tasks": {"manage_notes", "manage_calendar", "manage_tasks"},
     "ui": {"ui_control"},
@@ -437,6 +448,12 @@ List recent emails from a folder, newest first, including read messages by defau
 Search mail by sender, subject, and body text. Use this when the user asks to find an email/person/topic/thread/order/invoice instead of listing recent emails and filtering manually. For requests like "find eBay message from emails and extract tracking URL" or "find Amazon Prime email", search for the sender/topic first; do not resolve it as a contact. Tracking/link queries can return `extracted_urls`, `url_details`, and `tracking_candidates` directly on each email row. Returns UID + folder + account; pass all three forward to `read_email`, `reply_to_email`, or `extract_email_urls` only if more detail is needed.""",
     "read_email": "- ```read_email``` — Read a specific email by UID. Args (JSON): {\"uid\": \"...\", \"folder\": \"INBOX\", \"account\": \"gmail\"}. Include `account` when the UID came from a named/non-default mailbox. Returns body, attachments, and extracted URL metadata.",
     "extract_email_urls": "- ```extract_email_urls``` — Extract links from an email by UID/Message-ID or direct text/html. Args (JSON): {\"uid\":\"...\", \"folder\":\"INBOX\", \"account\":\"gmail\"}. Returns each URL with context: `alt: ...`, `button: ...`, `a text: ...`, or `standalone url`. Use directly after `search_emails` when the user asks for tracking/open/verify links, URLs, or buttons inside an email; `read_email` is not required first.",
+    "list_instagram_accounts": "- ```list_instagram_accounts``` — List configured Instagram private API accounts. Args (JSON): {}. Credentials/session IDs are never returned.",
+    "list_instagram_threads": "- ```list_instagram_threads``` — List recent Instagram DM threads. Args (JSON): {\"max_results\": 20, \"account\": \"main\"}. Returns thread IDs, participants, previews, and URL metadata.",
+    "search_instagram_messages": "- ```search_instagram_messages``` — Search Instagram DMs by participant/thread/message text. Args (JSON): {\"query\":\"package tracking\", \"max_threads\":20, \"max_messages_per_thread\":30, \"account\":\"main\"}. Use instead of manually filtering thread lists. Returns thread_id, message_id, text, extracted_urls, url_details, tracking_candidates.",
+    "read_instagram_thread": "- ```read_instagram_thread``` — Read an Instagram DM thread. Args (JSON): {\"thread_id\":\"...\", \"max_messages\":30, \"account\":\"main\"}. Returns messages with URL metadata.",
+    "extract_instagram_urls": "- ```extract_instagram_urls``` — Extract URLs from text or an Instagram thread. Args (JSON): {\"thread_id\":\"...\", \"max_messages\":50, \"account\":\"main\"} or {\"text\":\"...\"}.",
+    "send_instagram_message": "- ```send_instagram_message``` — Send an Instagram DM immediately. Args (JSON): {\"thread_id\":\"...\"} OR {\"username\":\"handle\"}, plus \"text\" and optional image/video \"attachments\" from Odysseus uploads.",
     "reply_to_email": """\
 ```reply_to_email
 {"uid": "1234", "body": "Sounds good — talk Friday.", "account": "gmail"}
@@ -469,7 +486,7 @@ If the user asks for a reminder/alarm before the event, pass `reminder_minutes` 
     "send_to_session": "- ```send_to_session``` — Send a message to another session. Line 1 = session_id, rest = message. Use for orchestrating work across sessions.",
     "search_chats": "- ```search_chats``` — Search past session transcripts for direct conversation evidence. Use when user asks 'did we discuss X?', 'find the conversation about Y', or when prior chat context is more appropriate than persistent memory.",
     "pipeline": "- ```pipeline``` — Run a multi-step AI pipeline. Args (JSON) with ordered steps, each specifying a model and prompt. Use for complex workflows.",
-    "ui_control": "- ```ui_control``` — Control the UI: toggle tools on/off, OPEN PANELS, open email reply drafts, switch models, change themes. Commands: `toggle <name> on/off` (names: bash/shell, web/search, research, incognito, document_editor/documents), `open_panel <name>` (panels: documents, gallery, email, sessions, notes, memories/brain, skills, settings, cookbook), `open_email_reply <uid> <folder> <reply|reply-all|ai-reply>` (opens an email compose document, does NOT send), `set_mode agent/chat`, `switch_model <name>`, `set_theme <preset>`, `create_theme <name> <bg> <fg> <panel> <border> <accent>` (optional key=val for advanced colors AND background effects: bgPattern=<none|dots|synapse|rain|constellations|perlin-flow|petals|sparkles|embers>, bgEffectColor=#RRGGBB, bgEffectIntensity=<num>, bgEffectSize=<num>, frosted=true|false). \"open documents\" / \"open library\" / \"show gallery\" / \"open inbox\" / \"open notes\" / \"open cookbook\" all map to `open_panel <name>`. Built-in theme presets: dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute. For any other vibe/name, use create_theme.",
+    "ui_control": "- ```ui_control``` — Control the UI: toggle tools on/off, OPEN PANELS, open email reply drafts, switch models, change themes. Commands: `toggle <name> on/off` (names: bash/shell, web/search, research, incognito, document_editor/documents), `open_panel <name>` (panels: documents, gallery, email, instagram, sessions, notes, memories/brain, skills, settings, cookbook), `open_email_reply <uid> <folder> <reply|reply-all|ai-reply>` (opens an email compose document, does NOT send), `set_mode agent/chat`, `switch_model <name>`, `set_theme <preset>`, `create_theme <name> <bg> <fg> <panel> <border> <accent>` (optional key=val for advanced colors AND background effects: bgPattern=<none|dots|synapse|rain|constellations|perlin-flow|petals|sparkles|embers>, bgEffectColor=#RRGGBB, bgEffectIntensity=<num>, bgEffectSize=<num>, frosted=true|false). \"open documents\" / \"open library\" / \"show gallery\" / \"open inbox\" / \"open instagram\" / \"open notes\" / \"open cookbook\" all map to `open_panel <name>`. Built-in theme presets: dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute. For any other vibe/name, use create_theme.",
     "ask_user": "- ```ask_user``` — Ask the user a multiple-choice question when the task is genuinely ambiguous and the answer changes what you do next (pick an approach, confirm an assumption, choose a target). Args (JSON): {\"question\": \"...\", \"options\": [{\"label\": \"...\", \"description\": \"...\"?}, ...], \"multi\": false?}. 2-6 options. The user gets clickable buttons; calling this ENDS your turn and their choice comes back as your next message. Prefer sensible defaults — only ask when you truly can't proceed well without their input.",
     "update_plan": "- ```update_plan``` — While executing an approved plan, write the plan back: tick steps done or revise them. Args (JSON): {\"plan\": \"- [x] done step\\n- [ ] next step\"}. Always pass the COMPLETE checklist, not a diff. Call it after finishing each step (mark it `- [x]`) and whenever the user asks to change the plan. The user's docked plan window updates live. Does nothing if there's no active plan.",
     "list_served_models": "- ```list_served_models``` — Show what the Cookbook (LLM-serving subsystem) is currently running. NO args. Use this for ANY 'what's running' / 'what's serving' / 'show my cookbook' / 'is anything up' query. DO NOT shell out (`ps aux`, `docker ps`, etc.) — this tool is the source of truth. Failed serve tasks include recent logs plus diagnosis/retry suggestions; use those suggestions to call `serve_model` again with an adjusted command when appropriate.",
@@ -503,6 +520,7 @@ GENERIC LOOPBACK to allowed Odysseus internal endpoints. Use this whenever the u
 - Research: `/api/research/start`, `/api/research/tasks` (note: `/api/research/report/{id}` renders HTML — to READ a report's text use the `manage_research` tool with `action:read`, not this endpoint)
 - Compare: `/api/compare/sessions`, `/api/compare/start`
 - Email: use named email tools (`list_email_accounts`, `list_emails`, `search_emails`, `read_email`, `extract_email_urls`, `send_email`, `reply_to_email`). Do NOT use `/api/email/accounts`; it is owner-filtered in tool context and may falsely return empty.
+- Instagram: use named Instagram tools (`list_instagram_accounts`, `list_instagram_threads`, `search_instagram_messages`, `read_instagram_thread`, `extract_instagram_urls`, `send_instagram_message`) for DMs. Do NOT use web search for Instagram messages.
 - Endpoints (model providers): `/api/endpoints`, `/api/endpoints/{id}`
 - Shell: do NOT use `app_api` for `/api/shell/*`; use named command tooling instead.
 
@@ -617,7 +635,8 @@ _API_HOSTS = frozenset([
     "localhost", "127.0.0.1", "host.docker.internal",
 ])
 _MCP_KEYWORDS = frozenset(["mcp", "browse", "browser", "website", "calendar", "event", "email",
-                           "gmail", "screenshot", "navigate", "click", "miniflux", "rss", "feed"])
+                           "gmail", "instagram", "insta", "ig", "dm", "direct message",
+                           "screenshot", "navigate", "click", "miniflux", "rss", "feed"])
 _ADMIN_SCHEMA_NAMES = frozenset([
     "manage_session", "manage_skills", "manage_tasks",
     "manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens",
@@ -1028,6 +1047,12 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("cookbook")
     if has(r"\b(emails?|mails?|gmail|inbox|reply|forward|cc|bcc|send email|compose email|draft email|message chris|message him|message her)\b"):
         domains.add("email")
+    instagram_intent = has(
+        r"\b(instagram|insta|ig|dms?|dm me|direct messages?|directs?)\b",
+        r"\b(?:send|message|reply|find|search|read|open|show|get)\b.*\b(?:instagram|insta|ig|dms?|direct messages?)\b",
+    )
+    if instagram_intent:
+        domains.add("instagram")
     if has(r"\b(note|todo|to-do|checklist|task list|remind me|reminder|buy|pickup|pick up)\b"):
         domains.add("notes_calendar_tasks")
     if has(r"\b(every day|every morning|every evening|recurring|automatically|cron|scheduled task|background task)\b"):
@@ -1045,10 +1070,12 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         # Email search/link extraction is a local mailbox workflow. A bare
         # "url" or "search" in that context must not surface web_search, or
         # small models drift into unrelated web results.
-        if not (email_url_extract or mailbox_search) and ("email" not in domains or _has_explicit_web_intent(retrieval_query)):
+        if not (email_url_extract or mailbox_search or instagram_intent) and ("email" not in domains or _has_explicit_web_intent(retrieval_query)):
             domains.add("web")
     if email_url_extract or mailbox_search:
         domains.add("email")
+        domains.discard("web")
+    if instagram_intent:
         domains.discard("web")
     if has(r"\b(research|deep dive|investigate|look into)\b"):
         domains.add("web")

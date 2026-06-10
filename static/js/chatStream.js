@@ -159,6 +159,11 @@ export function handleUIControl(uiData) {
           var fn = mod.openEmailLibrary || (mod.default && mod.default.openEmailLibrary);
           if (fn) fn();
         }).catch(function(){});
+      } else if (panel === 'instagram') {
+        import('./instagramPanel.js').then(function(mod) {
+          var fn = mod.openInstagramPanel || (mod.default && mod.default.openInstagramPanel);
+          if (fn) fn();
+        }).catch(function(){});
       } else if (panel === 'sessions') {
         import('./sessions.js').then(function(mod) {
           var fn = mod.openLibrary || (mod.default && mod.default.openLibrary);

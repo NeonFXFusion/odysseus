@@ -41,6 +41,7 @@ def test_email_and_ui_actions_promote_to_agent():
     assert message_needs_tools("reply to that email")
     assert message_needs_tools("mark those emails as read")
     assert message_needs_tools("open my calendar")
+    assert message_needs_tools("open my instagram DMs")
     assert message_needs_tools("turn off web search")
 
 
@@ -61,4 +62,5 @@ def test_explanatory_calendar_questions_stay_plain_chat():
 def test_router_reports_non_calendar_categories():
     assert classify_tool_intent("reply to that email").category == "email"
     assert classify_tool_intent("open my calendar").category == "ui"
+    assert classify_tool_intent("show instagram").category == "ui"
     assert classify_tool_intent("research cost effective local models").category == "research"

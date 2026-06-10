@@ -3245,6 +3245,7 @@ const INTG_TYPES = {
   contacts: { label: 'Contacts', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
   carddav: { label: 'CardDAV', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
   email:   { label: 'Email',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>' },
+  instagram: { label: 'Instagram', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1"/></svg>' },
   mcp:     { label: 'MCP',     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>' },
   codex:   { label: 'Codex',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 10.696.453a6.023 6.023 0 0 0-5.75 4.172 6.061 6.061 0 0 0-3.946 2.945 6.024 6.024 0 0 0 .742 7.099 5.98 5.98 0 0 0 .516 4.911 6.046 6.046 0 0 0 6.51 2.9A5.996 5.996 0 0 0 13.26 23.547a6.023 6.023 0 0 0 5.75-4.172 6.061 6.061 0 0 0 3.946-2.945 6.024 6.024 0 0 0-.674-6.609zM13.26 21.047a4.508 4.508 0 0 1-2.886-1.041l.143-.082 4.793-2.769a.777.777 0 0 0 .391-.676V10.34l2.026 1.17a.072.072 0 0 1 .039.061v5.596a4.532 4.532 0 0 1-4.506 4.48zM3.968 17.64a4.473 4.473 0 0 1-.537-3.018l.143.086 4.793 2.769a.79.79 0 0 0 .782 0l5.852-3.379v2.34a.072.072 0 0 1-.029.062l-4.845 2.796a4.532 4.532 0 0 1-6.159-1.656zM2.804 7.922a4.49 4.49 0 0 1 2.348-1.973V11.6a.778.778 0 0 0 .391.676l5.852 3.378-2.026 1.17a.072.072 0 0 1-.068 0L4.456 14.03a4.532 4.532 0 0 1-1.652-6.108zm16.423 3.823L13.375 8.367l2.026-1.17a.072.072 0 0 1 .068 0l4.845 2.796a4.525 4.525 0 0 1-.7 8.08V12.42a.778.778 0 0 0-.387-.676zm2.015-3.025l-.143-.086-4.793-2.769a.79.79 0 0 0-.782 0L9.672 9.243V6.903a.072.072 0 0 1 .029-.062l4.845-2.796a4.525 4.525 0 0 1 6.696 4.675zM8.598 12.66L6.57 11.49a.072.072 0 0 1-.039-.061V5.833a4.525 4.525 0 0 1 7.413-3.48l-.143.082-4.793 2.769a.777.777 0 0 0-.391.676l-.019 6.78zm1.1-2.379l2.607-1.505 2.607 1.505v3.01l-2.607 1.505-2.607-1.505z"/></svg>' },
   claude:  { label: 'Claude',  icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
@@ -3340,7 +3341,17 @@ async function initUnifiedIntegrations() {
     const items = [];
     // API integrations
     for (const intg of (apiRes.integrations || [])) {
-      items.push({ type: 'api', id: intg.id, name: intg.name || 'Unnamed', detail: intg.base_url || '', enabled: intg.enabled !== false, data: intg });
+      const preset = String(intg.preset || '').toLowerCase();
+      const isInstagram = preset === 'instagram_private';
+      const username = String(intg.username || '').replace(/^@+/, '');
+      items.push({
+        type: isInstagram ? 'instagram' : 'api',
+        id: intg.id,
+        name: intg.name || (isInstagram ? 'Instagram' : 'Unnamed'),
+        detail: isInstagram ? (username ? `@${username}` : 'Instagram private API') : (intg.base_url || ''),
+        enabled: intg.enabled !== false,
+        data: intg,
+      });
     }
     // CalDAV — one card per account
     for (const acc of (calRes.accounts || [])) {
@@ -3456,7 +3467,7 @@ async function initUnifiedIntegrations() {
         const type = btn.dataset.intgType;
         const id = btn.dataset.intgId;
         try {
-          if (type === 'api') await fetch(`/api/auth/integrations/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+          if (type === 'api' || type === 'instagram') await fetch(`/api/auth/integrations/${id}`, { method: 'DELETE', credentials: 'same-origin' });
           else if (type === 'caldav') await fetch(`/api/calendar/config/accounts/${id}`, { method: 'DELETE', credentials: 'same-origin' });
           else if (type === 'contacts') {
             await fetch('/api/contacts/clear', { method: 'DELETE', credentials: 'same-origin' });
@@ -3478,7 +3489,7 @@ async function initUnifiedIntegrations() {
 
   function showForm(type, editId) {
     formEl.style.display = '';
-    if (type === 'api') showApiForm(editId);
+    if (type === 'api' || type === 'instagram') showApiForm(editId, type === 'instagram' ? 'instagram_private' : null);
     else if (type === 'caldav') showCalDavForm(editId);
     else if (type === 'contacts' || type === 'carddav') showCardDavForm();
     else if (type === 'email') showEmailForm(editId);
@@ -3489,7 +3500,7 @@ async function initUnifiedIntegrations() {
   }
 
   // ── API form ──
-  async function showApiForm(editId) {
+  async function showApiForm(editId, forcedPreset = null) {
     let presets = {};
     try {
       const r = await fetch('/api/auth/integrations/presets', { credentials: 'same-origin' });
@@ -3525,6 +3536,7 @@ async function initUnifiedIntegrations() {
       ntfy:            _apiLetter('n', '#317f43'),
       vaultwarden:     _apiLetter('V', '#175ddc'),
       freshrss:        _apiLetter('R', '#ef6c00'),
+      instagram_private: _apiLetter('I', '#d62976'),
     };
     const _apiIconFor = (k) => {
       if (!k) return _apiCustomIco;
@@ -3550,11 +3562,18 @@ async function initUnifiedIntegrations() {
             </div>
           </div>
           <div class="settings-row"><label class="settings-label">Name</label><input id="uf-api-name" class="settings-input" placeholder="My Service"></div>
-          <div class="settings-row"><label class="settings-label">Base URL</label><input id="uf-api-url" class="settings-input" placeholder="http://localhost:8080"></div>
+          <div class="settings-row" id="uf-api-url-row"><label class="settings-label">Base URL</label><input id="uf-api-url" class="settings-input" placeholder="http://localhost:8080"></div>
           <div id="uf-api-ntfy-hint" style="display:none;font-size:11px;line-height:1.35;opacity:0.68;margin:-2px 0 2px 106px;"></div>
-          <div class="settings-row"><label class="settings-label">Auth${_apiHint('How this service expects the credential to be sent. <b>Bearer</b> = sends "Authorization: Bearer YOUR_KEY" (most modern APIs, ntfy, OpenAI-style). <b>Header</b> = sends YOUR_KEY verbatim under a header name you choose (Miniflux uses X-Auth-Token). <b>Basic</b> = HTTP basic auth (user:pass). <b>None</b> = the API is open / no auth.')}</label><select id="uf-api-auth" class="settings-input"><option value="bearer">Bearer (most common)</option><option value="header">Header</option><option value="basic">Basic</option><option value="none">None</option></select></div>
+          <div class="settings-row" id="uf-api-auth-row"><label class="settings-label">Auth${_apiHint('How this service expects the credential to be sent. <b>Bearer</b> = sends "Authorization: Bearer YOUR_KEY" (most modern APIs, ntfy, OpenAI-style). <b>Header</b> = sends YOUR_KEY verbatim under a header name you choose (Miniflux uses X-Auth-Token). <b>Basic</b> = HTTP basic auth (user:pass). <b>None</b> = the API is open / no auth.')}</label><select id="uf-api-auth" class="settings-input"><option value="bearer">Bearer (most common)</option><option value="header">Header</option><option value="basic">Basic</option><option value="none">None</option></select></div>
           <div class="settings-row" id="uf-api-header-row"><label class="settings-label">Header${_apiHint('The HTTP header name the key goes under (Miniflux: X-Auth-Token; most others: Authorization). Only used when Auth = Header.')}</label><input id="uf-api-header" class="settings-input" placeholder="X-Auth-Token"></div>
-          <div class="settings-row"><label class="settings-label">API Key${_apiHint('The secret token the service issued you (generated in its admin panel / settings). Used to prove your identity on each request. Required for any Auth mode except None.')}</label><input id="uf-api-key" class="settings-input" type="password" placeholder="Token/key"></div>
+          <div class="settings-row" id="uf-api-key-row"><label class="settings-label">API Key${_apiHint('The secret token the service issued you (generated in its admin panel / settings). Used to prove your identity on each request. Required for any Auth mode except None.')}</label><input id="uf-api-key" class="settings-input" type="password" placeholder="Token/key"></div>
+          <div id="uf-api-instagram-fields" style="display:none;">
+            <div style="font-size:11px;line-height:1.45;padding:8px 10px;margin:2px 0 6px;border:1px solid color-mix(in srgb, var(--fg) 15%, transparent);border-left:3px solid var(--accent, var(--red));border-radius:4px;background:color-mix(in srgb, var(--fg) 4%, transparent);opacity:0.8;">Private API login for the local Instagram MCP tools. Instagram may challenge or rate-limit automation sessions.</div>
+            <div class="settings-row"><label class="settings-label">Username</label><input id="uf-api-ig-username" class="settings-input" placeholder="instagram_username" autocomplete="username"></div>
+            <div class="settings-row"><label class="settings-label">Password</label><input id="uf-api-ig-password" class="settings-input" type="password" placeholder="Leave blank to keep existing" autocomplete="current-password"></div>
+            <div class="settings-row"><label class="settings-label">Session ID</label><input id="uf-api-ig-sessionid" class="settings-input" type="password" placeholder="Optional; leave blank to keep existing"></div>
+            <div class="settings-row"><label class="settings-label">Proxy</label><input id="uf-api-ig-proxy" class="settings-input" placeholder="Optional, e.g. http://user:pass@host:port"></div>
+          </div>
           <div class="settings-row" style="margin-top:4px"><button class="admin-btn-sm" id="uf-api-save">Save</button><button class="admin-btn-sm" id="uf-api-test" style="opacity:0.7">Test</button><button class="admin-btn-sm" id="uf-api-cancel" style="opacity:0.7">Cancel</button><span id="uf-api-msg" style="font-size:11px"></span></div>
         </div>
       </div>`;
@@ -3601,15 +3620,50 @@ async function initUnifiedIntegrations() {
     })();
 
     const preset = el('uf-api-preset'), name = el('uf-api-name'), url = el('uf-api-url'), auth = el('uf-api-auth'), header = el('uf-api-header'), key = el('uf-api-key'), ntfyHint = el('uf-api-ntfy-hint');
+    const igFields = el('uf-api-instagram-fields'), igUsername = el('uf-api-ig-username'), igPassword = el('uf-api-ig-password'), igSessionid = el('uf-api-ig-sessionid'), igProxy = el('uf-api-ig-proxy');
     let _editId = editId && editId !== 'new' ? editId : null;
+    const _setApiPresetVisual = (k) => {
+      const trig = el('uf-api-preset-trigger');
+      const menu = el('uf-api-preset-menu');
+      const row = menu?.querySelector(`.ufapi-option[data-value="${k || ''}"]`);
+      const label = row?.querySelector('span')?.textContent || 'Custom (no preset)';
+      const lbl = trig?.querySelector('.ufapi-label');
+      const ico = trig?.querySelector('.ufapi-icon');
+      if (lbl) lbl.textContent = label;
+      if (ico) ico.innerHTML = _apiIconFor(k || '');
+    };
+    const _igUsernameFromUrl = (raw) => {
+      const value = String(raw || '').trim();
+      if (!value) return '';
+      try {
+        const parsed = new URL(value);
+        if (parsed.protocol === 'instagram-private:' || parsed.protocol === 'instagram:') {
+          return `${parsed.hostname}${parsed.pathname}`.replace(/^\/+|\/+$/g, '').replace(/^@+/, '');
+        }
+      } catch (_) {}
+      return '';
+    };
     // Load existing
     if (_editId) {
       try {
         const r = await fetch('/api/auth/integrations', { credentials: 'same-origin' });
         const d = await r.json();
         const item = (d.integrations || []).find(i => i.id === _editId);
-        if (item) { name.value = item.name || ''; url.value = item.base_url || ''; auth.value = item.auth_type || 'none'; header.value = item.auth_header || ''; }
+        if (item) {
+          preset.value = item.preset || forcedPreset || '';
+          _setApiPresetVisual(preset.value);
+          name.value = item.name || '';
+          url.value = item.base_url || '';
+          auth.value = item.auth_type || 'none';
+          header.value = item.auth_header || '';
+          key.placeholder = item.api_key ? 'Leave blank to keep current' : 'Token/key';
+          if (igUsername) igUsername.value = String(item.username || _igUsernameFromUrl(item.base_url) || '').replace(/^@+/, '');
+          if (igProxy) igProxy.value = item.proxy || '';
+        }
       } catch (_) {}
+    } else if (forcedPreset) {
+      preset.value = forcedPreset;
+      _setApiPresetVisual(preset.value);
     }
     // Native <select>: the option `value` is the preset key directly, so
     // no typed-name → key lookup is needed (datalist-era leftover).
@@ -3617,35 +3671,73 @@ async function initUnifiedIntegrations() {
       const p = presets[preset.value];
       const isNtfy = preset.value === 'ntfy' || (p && (p.name || '').toLowerCase() === 'ntfy');
       const isUrlAuth = preset.value === 'discord_webhook'; // secret embedded in URL — no key/auth fields needed
+      const isInstagram = preset.value === 'instagram_private';
       if (ntfyHint) {
-        ntfyHint.style.display = isNtfy ? 'block' : 'none';
+        ntfyHint.style.display = isNtfy && !isInstagram ? 'block' : 'none';
         if (isNtfy) {
           ntfyHint.innerHTML = 'Enter the ntfy server URL Odysseus can reach. Examples: <code>http://127.0.0.1:8091</code>, <code>http://100.x.y.z:8091</code>, or <code>https://ntfy.example.com</code>.';
         }
       }
       if (url) {
-        url.placeholder = isNtfy ? 'http://127.0.0.1:8091' : isUrlAuth ? 'https://discord.com/api/webhooks/...' : 'http://localhost:8080';
+        url.placeholder = isInstagram ? 'instagram-private://username' : isNtfy ? 'http://127.0.0.1:8091' : isUrlAuth ? 'https://discord.com/api/webhooks/...' : 'http://localhost:8080';
       }
       // For presets that embed the secret in the URL, hide auth/key/header rows
       // so users aren't confused into thinking they need to fill them in.
-      const keyRow = key?.closest('.settings-row');
-      const authRow = auth?.closest('.settings-row');
+      const keyRow = el('uf-api-key-row');
+      const authRow = el('uf-api-auth-row');
+      const urlRow = el('uf-api-url-row');
       const headerRow = el('uf-api-header-row');
-      if (keyRow) keyRow.style.display = isUrlAuth ? 'none' : '';
-      if (authRow) authRow.style.display = isUrlAuth ? 'none' : '';
-      if (headerRow) headerRow.style.display = isUrlAuth ? 'none' : '';
+      if (keyRow) keyRow.style.display = (isUrlAuth || isInstagram) ? 'none' : '';
+      if (authRow) authRow.style.display = (isUrlAuth || isInstagram) ? 'none' : '';
+      if (headerRow) headerRow.style.display = (isUrlAuth || isInstagram) ? 'none' : '';
+      if (urlRow) urlRow.style.display = isInstagram ? 'none' : '';
+      if (igFields) igFields.style.display = isInstagram ? 'block' : 'none';
       if (!p) return;
-      name.value = p.name || '';
+      if (!_editId || !name.value) name.value = p.name || '';
       auth.value = p.auth_type || 'none';
       header.value = p.auth_header || '';
+      if (isInstagram) {
+        auth.value = 'none';
+        header.value = '';
+        const user = String(igUsername?.value || '').trim().replace(/^@+/, '') || 'account';
+        url.value = `instagram-private://${user}`;
+      }
     };
     preset.addEventListener('change', _applyPreset);
     _applyPreset();
     el('uf-api-cancel').addEventListener('click', () => { formEl.style.display = 'none'; });
     el('uf-api-save').addEventListener('click', async () => {
       const presetKey = preset.value || undefined;
-      const body = { name: name.value, base_url: url.value, auth_type: auth.value, auth_header: header.value, preset: presetKey };
-      if (key.value) body.api_key = key.value;
+      let body;
+      if (presetKey === 'instagram_private') {
+        const username = String(igUsername?.value || '').trim().replace(/^@+/, '');
+        const secret = {};
+        if (igPassword?.value) secret.password = igPassword.value;
+        if (igSessionid?.value) secret.sessionid = igSessionid.value;
+        if (!username) {
+          el('uf-api-msg').textContent = 'Username required';
+          el('uf-api-msg').style.color = 'var(--red)';
+          return;
+        }
+        if (!_editId && !secret.password && !secret.sessionid) {
+          el('uf-api-msg').textContent = 'Password or session ID required';
+          el('uf-api-msg').style.color = 'var(--red)';
+          return;
+        }
+        body = {
+          name: name.value.trim() || `Instagram ${username}`,
+          base_url: `instagram-private://${username}`,
+          auth_type: 'none',
+          auth_header: '',
+          preset: 'instagram_private',
+          username,
+          proxy: String(igProxy?.value || '').trim(),
+        };
+        if (Object.keys(secret).length) body.api_key = JSON.stringify(secret);
+      } else {
+        body = { name: name.value, base_url: url.value, auth_type: auth.value, auth_header: header.value, preset: presetKey };
+        if (key.value) body.api_key = key.value;
+      }
       try {
         const u = _editId ? `/api/auth/integrations/${_editId}` : '/api/auth/integrations';
         const m = _editId ? 'PUT' : 'POST';

@@ -406,13 +406,13 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "ui_control",
-            "description": "Control the user interface. Actions: toggle (turn tools on/off), open_panel (open a modal: documents/library, gallery, email, sessions, notes, memories/brain, skills, settings, cookbook), open_email_reply (open an email reply draft document; does NOT send), set_mode, switch_model, set_theme (built-in presets: dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute), create_theme (CREATE any custom theme with a name + colors object — pick distinctive, evocative hex colors that match the requested aesthetic, NOT generic defaults. The theme auto-applies after creation). When a user asks for ANY theme not in the built-in preset list, ALWAYS use create_theme.",
+            "description": "Control the user interface. Actions: toggle (turn tools on/off), open_panel (open a modal: documents/library, gallery, email, instagram, sessions, notes, memories/brain, skills, settings, cookbook), open_email_reply (open an email reply draft document; does NOT send), set_mode, switch_model, set_theme (built-in presets: dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute), create_theme (CREATE any custom theme with a name + colors object — pick distinctive, evocative hex colors that match the requested aesthetic, NOT generic defaults. The theme auto-applies after creation). When a user asks for ANY theme not in the built-in preset list, ALWAYS use create_theme.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["toggle", "open_panel", "open_email_reply", "set_mode", "switch_model", "set_theme", "create_theme", "get_toggles"],
                                "description": "The UI action. Use set_theme for presets, create_theme to build a custom theme with any hex colors"},
-                    "name": {"type": "string", "description": "For toggle: web, bash, research, incognito, document_editor (aliases: shell, search, deepresearch, documents). For open_panel: documents, gallery, email, sessions, notes, brain/memories, skills, settings, cookbook. For open_email_reply: email UID. For set_theme: a preset theme name. For create_theme: the custom theme name."},
+                    "name": {"type": "string", "description": "For toggle: web, bash, research, incognito, document_editor (aliases: shell, search, deepresearch, documents). For open_panel: documents, gallery, email, instagram, sessions, notes, brain/memories, skills, settings, cookbook. For open_email_reply: email UID. For set_theme: a preset theme name. For create_theme: the custom theme name."},
                     "value": {"type": "string", "description": "Value: on/off for toggle, agent/chat for set_mode, model name for switch_model, theme name for set_theme, or folder for open_email_reply"},
                     "uid": {"type": "string", "description": "Email UID for open_email_reply"},
                     "folder": {"type": "string", "description": "Email folder for open_email_reply (default INBOX)"},
@@ -507,7 +507,7 @@ FUNCTION_TOOL_SCHEMAS = [
                         "tidy_sessions", "tidy_documents", "consolidate_memory", "tidy_research",
                         "summarize_emails", "draft_email_replies", "extract_email_events",
                         "classify_events", "learn_sender_signatures",
-                        "test_skills", "audit_skills", "check_email_urgency"
+                        "test_skills", "audit_skills", "check_email_urgency", "check_instagram_urgency"
                     ],
                                     "description": "Built-in action (for task_type=action)"},
                     "trigger_type": {"type": "string", "enum": ["schedule", "event"],
@@ -950,7 +950,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "app_api",
-            "description": "Generic loopback to allowed internal Odysseus endpoints. Use this when there's no named tool for what the user wants. Hits the same routes the UI buttons hit (cookbook, gallery, library/documents, memory, notes, calendar, tasks, settings, themes, research, compare, etc.). action='endpoints' returns the OpenAPI surface (use `filter` to narrow). action='call' (default) takes method+path+body. Sensitive auth/user/admin/shell paths and host-control Cookbook mutation routes are blocked for safety. Do not use for shell commands; use named command tooling instead. Do not use for package installs, engine rebuilds, PID signalling, or email account discovery; use list_email_accounts for email accounts because /api/email/accounts is owner-filtered in tool context.",
+            "description": "Generic loopback to allowed internal Odysseus endpoints. Use this when there's no named tool for what the user wants. Hits the same routes the UI buttons hit (cookbook, gallery, library/documents, memory, notes, calendar, tasks, settings, themes, research, compare, etc.). action='endpoints' returns the OpenAPI surface (use `filter` to narrow). action='call' (default) takes method+path+body. Sensitive auth/user/admin/shell paths and host-control Cookbook mutation routes are blocked for safety. Do not use for shell commands; use named command tooling instead. Do not use for package installs, engine rebuilds, PID signalling, email account discovery, or Instagram DM work; use list_email_accounts for email accounts and named Instagram tools for DMs.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1155,6 +1155,112 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "list_instagram_accounts",
+            "description": "List configured Instagram private API accounts. Credentials/session IDs are never returned. Use before reading/sending Instagram DMs when the user mentions a specific Instagram account.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_instagram_threads",
+            "description": "List recent Instagram DM threads through the private API. Returns thread_id, participants, latest previews, and extracted URL metadata when present.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_results": {"type": "integer", "description": "Maximum threads to return (default: 20)"},
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_instagram_messages",
+            "description": "Search Instagram DMs by participant, thread title, message text, or item type. Use instead of listing many Instagram threads and filtering manually. Returns thread_id, message_id, account, text, extracted_urls, url_details, and tracking_candidates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Text to search for in Instagram DMs"},
+                    "max_threads": {"type": "integer", "description": "How many recent threads to inspect (default: 20)"},
+                    "max_messages_per_thread": {"type": "integer", "description": "Messages per thread to inspect (default: 30)"},
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_instagram_thread",
+            "description": "Read a specific Instagram DM thread by thread_id. Returns messages with message_id, sender, text, attachments-like item type, extracted_urls, url_details, and tracking_candidates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "Instagram DM thread_id from list_instagram_threads/search_instagram_messages"},
+                    "max_messages": {"type": "integer", "description": "Messages to read (default: 30)"},
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+                "required": ["thread_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_instagram_urls",
+            "description": "Extract HTTP/HTTPS URLs from direct text or an Instagram DM thread. Labels likely tracking URLs and returns extracted_urls, url_details, and tracking_candidates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "Instagram DM thread_id to scan"},
+                    "text": {"type": "string", "description": "Direct text to scan"},
+                    "max_messages": {"type": "integer", "description": "Messages to scan from a thread (default: 50)"},
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_instagram_message",
+            "description": "Send an Instagram DM immediately via the private API. Provide thread_id or username/user_id, text, and optional image/video attachments from Odysseus uploads.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "Existing Instagram DM thread_id"},
+                    "username": {"type": "string", "description": "Recipient Instagram username, with or without @"},
+                    "user_id": {"type": "string", "description": "Recipient Instagram numeric user ID"},
+                    "text": {"type": "string", "description": "Message text"},
+                    "attachments": {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "upload_id": {"type": "string"},
+                                        "filename": {"type": "string"},
+                                        "content_type": {"type": "string"},
+                                    },
+                                },
+                            ],
+                        },
+                        "description": "Optional image/video files from chat uploads or allowed local paths",
+                    },
+                    "account": {"type": "string", "description": "Optional Instagram account name/username/id from list_instagram_accounts"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "reply_to_email",
             "description": "SEND a reply email immediately by UID. Do not use this when the user asks to open/start a reply window or draft; use ui_control action=open_email_reply instead. For follow-up 'reply ...' requests where the user clearly wants to send now, use the exact UID from the latest read_email/list_emails result; never invent UID 1. Automatically threads with In-Reply-To/References headers.",
             "parameters": {
@@ -1294,6 +1400,17 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
                             "download_attachment"}
     if name in _BUILTIN_EMAIL_TOOLS:
         return ToolBlock(f"mcp__email__{name}", json.dumps(args) if args else "{}")
+    # Instagram private API tools are implemented as MCP — route them to instagram
+    _BUILTIN_INSTAGRAM_TOOLS = {
+        "list_instagram_accounts",
+        "list_instagram_threads",
+        "search_instagram_messages",
+        "read_instagram_thread",
+        "extract_instagram_urls",
+        "send_instagram_message",
+    }
+    if name in _BUILTIN_INSTAGRAM_TOOLS:
+        return ToolBlock(f"mcp__instagram__{name}", json.dumps(args) if args else "{}")
     if tool_type not in TOOL_TAGS:
         logger.warning(f"Unknown function call: {name}")
         return None

@@ -42,7 +42,7 @@ _EXPLANATORY_PREFIX = re.compile(
 )
 
 _PANEL = (
-    r"(?:calendar|notes?|inbox|email|mail|documents?|docs|library|gallery|"
+    r"(?:calendar|notes?|inbox|email|mail|instagram|insta|ig|dms?|directs?|documents?|docs|library|gallery|"
     r"settings|cookbook|sessions?|chats?|skills|memories|memory|brain)"
 )
 
@@ -88,7 +88,7 @@ _ROUTING_PATTERNS: tuple[tuple[str, str, Pattern[str]], ...] = tuple(
 
         # UI/control-plane actions that should open panels or flip toggles.
         ("ui", "open/show panel request", rf"{_PLEASE}(?:open|show|bring\s+up)\s+(?:me\s+)?(?:my\s+|the\s+)?{_PANEL}\b"),
-        ("ui", "tool or feature toggle request", r"\b(?:disable|enable|turn\s+(?:on|off))\s+(?:the\s+)?(?:shell|search|web|browser|documents?|memory|skills|images?|calendar|email|mail|research|incognito)\b"),
+        ("ui", "tool or feature toggle request", r"\b(?:disable|enable|turn\s+(?:on|off))\s+(?:the\s+)?(?:shell|search|web|browser|documents?|memory|skills|images?|calendar|email|mail|instagram|research|incognito)\b"),
 
         # Deep research jobs, not quick conceptual mentions of research.
         ("research", "deep research imperative request", rf"{_PLEASE}(?:research|deep\s+dive|look\s+into|investigate)\s+.+"),

@@ -67,6 +67,8 @@ TOOL_TAGS = {"bash", "python", "web_search", "web_fetch", "read_file", "write_fi
              "resolve_contact", "manage_contact", "list_email_accounts", "send_email", "list_emails",
              "search_emails", "read_email", "extract_email_urls", "reply_to_email", "bulk_email", "archive_email",
              "delete_email", "mark_email_read",
+             "list_instagram_accounts", "list_instagram_threads", "search_instagram_messages",
+             "read_instagram_thread", "extract_instagram_urls", "send_instagram_message",
              # Cookbook tools (LLM serving + downloads). Without these
              # entries, native function calls to e.g. list_served_models
              # are rejected as "Unknown function call" before reaching
