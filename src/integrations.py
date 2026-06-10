@@ -151,14 +151,14 @@ INTEGRATION_PRESETS: Dict[str, Dict[str, Any]] = {
         ),
     },
     "instagram_private": {
-        "name": "Instagram",
+        "name": "Instagram Private API",
         "auth_type": "none",
         "description": (
             "Instagram private API provider for local MCP tools. Used by the built-in Instagram MCP server "
             "to list/search/read Direct Messages and send DMs with optional image/video attachments. "
-            "This uses the unofficial instagrapi private API library; Instagram may challenge, rate-limit, "
-            "or block automation sessions. Store the username in the integration fields and credentials in "
-            "the encrypted secret field."
+            "This does not use an official Instagram API key; it logs in through the unofficial instagrapi "
+            "private API library with a username/password or session ID. Instagram may challenge, rate-limit, "
+            "or block automation sessions."
         ),
     },
 }

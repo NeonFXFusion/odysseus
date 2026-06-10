@@ -3506,6 +3506,11 @@ async function initUnifiedIntegrations() {
       const r = await fetch('/api/auth/integrations/presets', { credentials: 'same-origin' });
       if (r.ok) { const d = await r.json(); presets = d.presets || {}; }
     } catch (_) {}
+    const isForcedInstagram = forcedPreset === 'instagram_private';
+    const formTitle = isForcedInstagram ? 'Instagram Private API' : 'API Integration';
+    const formIcon = isForcedInstagram
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
     const presetEntries = Object.entries(presets);
     // Same `?` hint helper as the email form. Native title tooltip,
     // tabbable for keyboard users. Inline-styled so it doesn't need
@@ -3548,9 +3553,9 @@ async function initUnifiedIntegrations() {
       .map(([k, label]) => `<button type="button" class="ufapi-option" data-value="${esc(k)}" style="display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;background:transparent;border:0;color:var(--fg);font:inherit;cursor:pointer;text-align:left;">${_apiIconFor(k)}<span>${esc(label)}</span></button>`).join('');
     formEl.innerHTML = `
       <div class="admin-card" style="margin-top:8px">
-        <h2 style="font-size:13px;display:flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>API Integration</h2>
+        <h2 style="font-size:13px;display:flex;align-items:center;gap:6px;">${formIcon}${formTitle}</h2>
         <div class="settings-col">
-          <div class="settings-row"><label class="settings-label">Preset</label>
+          <div class="settings-row" id="uf-api-preset-row" style="${isForcedInstagram ? 'display:none;' : ''}"><label class="settings-label">Preset</label>
             <div style="position:relative;flex:1;min-width:0;">
               <select id="uf-api-preset" tabindex="-1" aria-hidden="true" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;"><option value="">Custom (no preset)</option>${selectOpts}</select>
               <button type="button" id="uf-api-preset-trigger" class="settings-select" style="display:flex;align-items:center;gap:10px;cursor:pointer;text-align:left;width:100%;padding-right:24px;position:relative;">
@@ -3568,7 +3573,7 @@ async function initUnifiedIntegrations() {
           <div class="settings-row" id="uf-api-header-row"><label class="settings-label">Header${_apiHint('The HTTP header name the key goes under (Miniflux: X-Auth-Token; most others: Authorization). Only used when Auth = Header.')}</label><input id="uf-api-header" class="settings-input" placeholder="X-Auth-Token"></div>
           <div class="settings-row" id="uf-api-key-row"><label class="settings-label">API Key${_apiHint('The secret token the service issued you (generated in its admin panel / settings). Used to prove your identity on each request. Required for any Auth mode except None.')}</label><input id="uf-api-key" class="settings-input" type="password" placeholder="Token/key"></div>
           <div id="uf-api-instagram-fields" style="display:none;">
-            <div style="font-size:11px;line-height:1.45;padding:8px 10px;margin:2px 0 6px;border:1px solid color-mix(in srgb, var(--fg) 15%, transparent);border-left:3px solid var(--accent, var(--red));border-radius:4px;background:color-mix(in srgb, var(--fg) 4%, transparent);opacity:0.8;">Private API login for the local Instagram MCP tools. Instagram may challenge or rate-limit automation sessions.</div>
+            <div style="font-size:11px;line-height:1.45;padding:8px 10px;margin:2px 0 6px;border:1px solid color-mix(in srgb, var(--fg) 15%, transparent);border-left:3px solid var(--accent, var(--red));border-radius:4px;background:color-mix(in srgb, var(--fg) 4%, transparent);opacity:0.8;">Private Instagram login for the local MCP tools. This does not use an official Instagram API key; use a username/password or session ID. Instagram may challenge or rate-limit automation sessions.</div>
             <div class="settings-row"><label class="settings-label">Username</label><input id="uf-api-ig-username" class="settings-input" placeholder="instagram_username" autocomplete="username"></div>
             <div class="settings-row"><label class="settings-label">Password</label><input id="uf-api-ig-password" class="settings-input" type="password" placeholder="Leave blank to keep existing" autocomplete="current-password"></div>
             <div class="settings-row"><label class="settings-label">Session ID</label><input id="uf-api-ig-sessionid" class="settings-input" type="password" placeholder="Optional; leave blank to keep existing"></div>
@@ -5231,6 +5236,7 @@ async function initUnifiedIntegrations() {
       formEl.style.display = '';
       const _typeOptions = [
         ['api', 'API Service'],
+        ['instagram', 'Instagram Private API'],
         ['caldav', 'CalDAV Calendar'],
         ['claude', 'Claude Agent'],
         ['codex', 'Codex Agent'],
