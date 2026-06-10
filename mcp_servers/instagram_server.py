@@ -370,8 +370,10 @@ def _normalize_instagram_user(value) -> dict:
         "id": str(data.get("pk") or data.get("id") or data.get("user_id") or ""),
         "username": str(data.get("username") or ""),
         "full_name": str(data.get("full_name") or ""),
-        "profile_pic_url": profile_pic_url,
-        "profile_pic_url_hd": _url_value(data.get("profile_pic_url_hd")) or profile_pic_url,
+        "profile_pic_url": "",
+        "profile_pic_url_hd": "",
+        "remote_profile_pic_url": profile_pic_url,
+        "remote_profile_pic_url_hd": _url_value(data.get("profile_pic_url_hd")) or profile_pic_url,
     }
 
 
@@ -857,6 +859,7 @@ class InstagramPrivateProvider:
         request = getattr(cl, "_send_public_request", None)
         if not callable(request):
             raise RuntimeError("instagrapi client cannot download URL media")
+        folder.mkdir(parents=True, exist_ok=True)
         response = request(url, stream=True, timeout=getattr(cl, "request_timeout", 30))
         response.raise_for_status()
         content_type = str(getattr(response, "headers", {}).get("content-type") or "").split(";", 1)[0].strip()
@@ -874,6 +877,61 @@ class InstagramPrivateProvider:
                 if chunk:
                     handle.write(chunk)
         return path
+
+    def cache_profile_picture_url(self, url: str, *, user_id: str = "", username: str = "") -> Path:
+        url = _url_value(url)
+        if not url:
+            raise RuntimeError("Profile picture URL is required")
+        cl = self.login()
+        folder = self.media_cache_root() / "profiles"
+        raw = username or user_id or url
+        stem = _safe_cache_segment(f"profile_{raw}_{_media_cache_id(url)}")
+        cached = self._cached_media_path(folder, stem)
+        if cached:
+            return cached
+        return self._download_url_with_client(cl, url, folder=folder, stem=stem, is_video=False)
+
+    def _localize_user_profile_pic(self, user: dict) -> dict:
+        out = dict(user or {})
+        remote = _url_value(
+            out.get("remote_profile_pic_url")
+            or out.get("remote_profile_pic_url_hd")
+            or out.get("profile_pic_url_hd")
+            or out.get("profile_pic_url")
+        )
+        out["remote_profile_pic_url"] = remote
+        out["profile_pic_url"] = ""
+        out["profile_pic_url_hd"] = ""
+        if not remote:
+            return out
+        try:
+            path = self.cache_profile_picture_url(
+                remote,
+                user_id=str(out.get("id") or ""),
+                username=str(out.get("username") or ""),
+            )
+            local_url = _cache_url_for_path(path)
+            out["profile_pic_url"] = local_url
+            out["profile_pic_url_hd"] = local_url
+            out["local_profile_pic_url"] = local_url
+            out["local_profile_pic_path"] = str(path)
+        except Exception:
+            pass
+        return out
+
+    def cache_profile_picture_user(self, user: dict) -> dict:
+        return self._localize_user_profile_pic(user or {})
+
+    def _localize_media_user_profile(self, item: dict) -> dict:
+        out = dict(item or {})
+        if isinstance(out.get("user"), dict):
+            out["user"] = self._localize_user_profile_pic(out["user"])
+        resources = []
+        for resource in out.get("resources") or []:
+            resources.append(self._localize_media_user_profile(resource) if isinstance(resource, dict) else resource)
+        if resources:
+            out["resources"] = resources
+        return out
 
     def _download_media_path(self, cl, item: dict, *, is_video: bool) -> Path:
         folder = self.media_cache_root()
@@ -1295,6 +1353,12 @@ class InstagramPrivateProvider:
             "from_user_id": user_id,
             "from_username": username,
             "from_profile_pic_url": str(user.get("profile_pic_url") or ""),
+            "from_remote_profile_pic_url": str(
+                user.get("remote_profile_pic_url")
+                or user.get("remote_profile_pic_url_hd")
+                or user.get("profile_pic_url")
+                or ""
+            ),
             "timestamp": _format_timestamp(_obj_get(msg, "timestamp", "created_at", default="")),
             "item_type": str(_obj_get(msg, "item_type", "type", default="")),
             "text": text,

@@ -24,6 +24,11 @@ let _searchTimer = null;
 let _mediaSeq = 0;
 let _mediaStore = new Map();
 let _mediaHydrationChain = Promise.resolve();
+let _avatarSeq = 0;
+let _avatarStore = new Map();
+let _avatarHydrationChain = Promise.resolve();
+let _avatarCacheByRemote = new Map();
+let _avatarPendingByRemote = new Map();
 
 function esc(value) {
   return String(value || '')
@@ -105,8 +110,12 @@ function _installStyles() {
       font-weight:700;
       flex-shrink:0;
       overflow:hidden;
+      position:relative;
+      line-height:1;
+      text-align:center;
     }
-    .instagram-avatar img { width:100%; height:100%; object-fit:cover; display:block; border-radius:inherit; }
+    .instagram-avatar-fallback { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+    .instagram-avatar img { position:absolute; inset:0; z-index:1; width:100%; height:100%; object-fit:cover; display:block; border-radius:inherit; }
     .instagram-thread-main { min-width:0; display:flex; flex-direction:column; gap:3px; }
     .instagram-thread-title { font-size:12px; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.25; }
     .instagram-thread-users { display:flex; gap:6px; align-items:center; min-width:0; font-size:11px; opacity:.66; overflow:hidden; white-space:nowrap; }
@@ -261,13 +270,80 @@ function _userDisplay(user) {
   return String(u.username || u.full_name || u.id || '').replace(/^@+/, '');
 }
 
+function _localAvatarUrl(user) {
+  const u = _normalizeUser(user) || {};
+  for (const value of [u.local_profile_pic_url, u.profile_pic_url, u.profile_pic_url_hd]) {
+    if (_isLocalInstagramMediaUrl(value)) return value;
+  }
+  return '';
+}
+
+function _remoteAvatarUrl(user) {
+  const u = _normalizeUser(user) || {};
+  for (const value of [u.remote_profile_pic_url_hd, u.remote_profile_pic_url, u.profile_pic_url_hd, u.profile_pic_url]) {
+    const text = String(value || '');
+    if (text && !_isLocalInstagramMediaUrl(text)) return text;
+  }
+  return '';
+}
+
+function _storeAvatarUser(user) {
+  const key = `a${++_avatarSeq}`;
+  _avatarStore.set(key, _normalizeUser(user) || {});
+  return key;
+}
+
+function _avatarInnerHtml(user, fallback = 'IG') {
+  const label = _userDisplay(user) || fallback;
+  const src = _localAvatarUrl(user);
+  return `<span class="instagram-avatar-fallback">${esc(_initials(label))}</span>${src
+    ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">`
+    : ''}`;
+}
+
 function _avatarHtml(user, fallback = 'IG') {
   const u = _normalizeUser(user) || {};
   const label = _userDisplay(u) || fallback;
-  const src = u.profile_pic_url || u.profile_pic_url_hd || '';
-  return `<span class="instagram-avatar">${src
-    ? `<img src="${esc(src)}" alt="${esc(label)}" loading="lazy">`
-    : esc(_initials(label))}</span>`;
+  const key = _storeAvatarUser(u);
+  return `<span class="instagram-avatar" data-avatar-key="${key}" title="${esc(label)}">${_avatarInnerHtml(u, label)}</span>`;
+}
+
+async function _cacheAvatarUser(user) {
+  const remote = _remoteAvatarUrl(user);
+  if (!remote) return user;
+  if (_avatarCacheByRemote.has(remote)) return { ...user, ..._avatarCacheByRemote.get(remote) };
+  if (!_avatarPendingByRemote.has(remote)) {
+    _avatarPendingByRemote.set(remote, _fetchJson(`${API_BASE}/api/instagram/profile/cache`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: _account || undefined, user }),
+    }).then(data => {
+      const cached = data.user || user;
+      _avatarCacheByRemote.set(remote, cached);
+      return cached;
+    }).finally(() => {
+      _avatarPendingByRemote.delete(remote);
+    }));
+  }
+  const cached = await _avatarPendingByRemote.get(remote);
+  return { ...user, ...cached };
+}
+
+function _hydrateAvatars(root = document) {
+  root.querySelectorAll('.instagram-avatar[data-avatar-key]').forEach(el => {
+    const key = el.dataset.avatarKey;
+    const user = _avatarStore.get(key);
+    if (!user || _localAvatarUrl(user) || !_remoteAvatarUrl(user) || el.dataset.cacheState === 'loading') return;
+    el.dataset.cacheState = 'loading';
+    _avatarHydrationChain = _avatarHydrationChain.then(() => _cacheAvatarUser(user), () => _cacheAvatarUser(user));
+    _avatarHydrationChain.then(cached => {
+      _avatarStore.set(key, cached);
+      el.innerHTML = _avatarInnerHtml(cached, _userDisplay(cached) || _userDisplay(user) || 'IG');
+      el.dataset.cacheState = 'ready';
+    }).catch(() => {
+      el.dataset.cacheState = 'failed';
+    });
+  });
 }
 
 function _threadUsers(thread) {
@@ -487,6 +563,7 @@ function _renderThreadList() {
   list.querySelectorAll('.instagram-thread').forEach(btn => {
     btn.addEventListener('click', () => _readThread(btn.dataset.threadId));
   });
+  _hydrateAvatars(list);
 }
 
 function _setReaderEmpty(message) {
@@ -529,6 +606,7 @@ function _renderThread(thread, accountUsername = '') {
       document.querySelector('.instagram-reader')?.classList.remove('thread-open');
     });
     head.querySelector('#instagram-thread-refresh')?.addEventListener('click', () => _readThread(_activeThreadId).catch(err => uiModule?.showError?.(err.message)));
+    _hydrateAvatars(head);
   }
   if (msgs) {
     const own = String(accountUsername || _currentAccountUsername()).toLowerCase();
@@ -551,6 +629,7 @@ function _renderThread(thread, accountUsername = '') {
       </div>`;
     }).join('') : '<div class="instagram-empty">No messages in this thread.</div>';
     _wireMediaClicks(msgs);
+    _hydrateAvatars(msgs);
     msgs.scrollTop = msgs.scrollHeight;
   }
   if (reply) reply.style.display = 'flex';
@@ -601,7 +680,12 @@ async function _searchThreads(q) {
       byThread.set(id, {
         thread_id: id,
         thread_title: msg.thread_title || id,
-        users: msg.from_username ? [{ username: msg.from_username }] : [],
+        users: msg.from_username ? [{
+          id: msg.from_user_id || '',
+          username: msg.from_username,
+          profile_pic_url: msg.from_profile_pic_url || '',
+          remote_profile_pic_url: msg.from_remote_profile_pic_url || msg.from_profile_pic_url || '',
+        }] : [],
         messages: [msg],
         tags: msg.tags || [],
       });

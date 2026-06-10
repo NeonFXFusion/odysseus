@@ -373,6 +373,44 @@ def test_instagram_cache_media_falls_back_when_download_by_url_has_no_extension(
     assert result["video_url"].startswith("/api/instagram/media-file/main/")
 
 
+def test_instagram_profile_picture_is_cached_to_local_url(monkeypatch, tmp_path):
+    monkeypatch.setattr(ig, "INSTAGRAM_MEDIA_CACHE_DIR", tmp_path / "instagram_media")
+
+    class FakeResponse:
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=8192):
+            yield b"jpg"
+
+    class FakeClient:
+        request_timeout = 3
+
+        def _send_public_request(self, url, stream=True, timeout=30):
+            return FakeResponse()
+
+        def _download_response_to_path(self, response, path):
+            path.write_bytes(b"jpg")
+            return path
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+
+    result = provider.cache_profile_picture_user({
+        "id": "100",
+        "username": "alice",
+        "remote_profile_pic_url": "https://cdn.example.invalid/avatar?token=1",
+    })
+
+    assert result["remote_profile_pic_url"] == "https://cdn.example.invalid/avatar?token=1"
+    assert result["profile_pic_url"].startswith("/api/instagram/media-file/main/profiles/")
+    assert result["profile_pic_url"] == result["local_profile_pic_url"]
+    assert result["local_profile_pic_path"].endswith(".jpg")
+
+
 def test_instagram_list_stories_uses_reels_tray_when_no_username():
     class FakeClient:
         user_id = "42"

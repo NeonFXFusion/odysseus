@@ -36,6 +36,11 @@ class InstagramMediaCacheRequest(BaseModel):
     resource_index: int | None = None
 
 
+class InstagramProfileCacheRequest(BaseModel):
+    account: str | None = None
+    user: dict[str, Any]
+
+
 def _provider(account=None):
     from mcp_servers.instagram_server import InstagramPrivateProvider
     return InstagramPrivateProvider(account=account)
@@ -204,6 +209,21 @@ def setup_instagram_routes() -> APIRouter:
             }
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @router.post("/profile/cache")
+    async def cache_profile(req: InstagramProfileCacheRequest, request: Request):
+        require_user(request)
+        try:
+            provider = _provider(req.account)
+            user = await asyncio.to_thread(provider.cache_profile_picture_user, req.user)
+            return {
+                "ok": True,
+                "account": provider.account_label(),
+                "account_id": str(provider.account.get("id") or req.account or ""),
+                "user": user,
+            }
+        except Exception as exc:
+            raise HTTPException(400, "Could not cache Instagram profile picture locally") from exc
 
     @router.get("/media-file/{file_path:path}")
     async def media_file(file_path: str, request: Request):
