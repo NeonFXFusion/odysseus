@@ -23,6 +23,7 @@ let _activeTab = 'dm';
 let _searchTimer = null;
 let _mediaSeq = 0;
 let _mediaStore = new Map();
+let _mediaHydrationChain = Promise.resolve();
 
 function esc(value) {
   return String(value || '')
@@ -167,6 +168,7 @@ function _installStyles() {
       padding:0;
       text-align:left;
     }
+    .instagram-media-card.loading { opacity:.72; cursor:wait; }
     .instagram-media-card img, .instagram-media-card video { width:100%; height:100%; min-height:92px; max-height:190px; object-fit:cover; display:block; background:#000; }
     .instagram-media-label { position:absolute; left:6px; bottom:6px; font-size:10px; color:#fff; background:rgba(0,0,0,.55); border-radius:4px; padding:2px 5px; max-width:calc(100% - 12px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .instagram-content-panel { flex:1; min-height:0; overflow:auto; padding:10px; display:flex; flex-direction:column; gap:10px; }
@@ -263,17 +265,50 @@ function _storeMedia(item) {
   return key;
 }
 
+function _isLocalInstagramMediaUrl(value) {
+  const text = String(value || '');
+  return text.startsWith('/api/instagram/media-file/') || text.startsWith(`${API_BASE}/api/instagram/media-file/`);
+}
+
 function _primaryMedia(item) {
   const resources = Array.isArray(item?.resources) ? item.resources : [];
   const first = resources[0] || item || {};
+  const firstLocalUrl = first.local_url || '';
+  const itemLocalUrl = item?.local_url || '';
   return {
-    image: first.image_url || first.thumbnail_url || item?.image_url || item?.thumbnail_url || '',
-    video: first.video_url || item?.video_url || '',
+    image: first.local_image_url
+      || (String(first.local_content_type || '').startsWith('image/') ? firstLocalUrl : '')
+      || (_isLocalInstagramMediaUrl(first.image_url) ? first.image_url : '')
+      || item?.local_image_url
+      || (String(item?.local_content_type || '').startsWith('image/') ? itemLocalUrl : '')
+      || (_isLocalInstagramMediaUrl(item?.image_url) ? item.image_url : '')
+      || '',
+    video: first.local_video_url
+      || (String(first.local_content_type || '').startsWith('video/') ? firstLocalUrl : '')
+      || (_isLocalInstagramMediaUrl(first.video_url) ? first.video_url : '')
+      || item?.local_video_url
+      || (String(item?.local_content_type || '').startsWith('video/') ? itemLocalUrl : '')
+      || (_isLocalInstagramMediaUrl(item?.video_url) ? item.video_url : '')
+      || '',
   };
 }
 
-function _mediaCardHtml(item, { grid = false } = {}) {
-  const key = _storeMedia(item);
+function _hasLocalMedia(item) {
+  const media = _primaryMedia(item);
+  return Boolean(media.image || media.video);
+}
+
+async function _cacheMediaItem(item) {
+  if (!item || _hasLocalMedia(item)) return item;
+  const data = await _fetchJson(`${API_BASE}/api/instagram/media/cache`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account: _account || undefined, media: item }),
+  });
+  return data.media || item;
+}
+
+function _mediaCardInnerHtml(item, { grid = false } = {}) {
   const media = _primaryMedia(item);
   const label = item.kind || item.source || 'media';
   const title = item.title || item.caption || item.code || label;
@@ -281,15 +316,22 @@ function _mediaCardHtml(item, { grid = false } = {}) {
     ? `<video src="${esc(media.video)}" muted playsinline preload="metadata" poster="${esc(media.image)}"></video>`
     : media.image
       ? `<img src="${esc(media.image)}" alt="${esc(title)}" loading="lazy">`
-      : `<div class="instagram-empty" style="padding:18px 8px;">${esc(label)}</div>`;
+      : `<div class="instagram-empty" style="padding:18px 8px;">Preparing media...</div>`;
   const meta = grid ? `<div class="instagram-grid-meta">
     <div style="font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(title || label)}</div>
     <div style="opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(item.username ? '@' + item.username : item.taken_at || item.pk || '')}</div>
   </div>` : '';
-  return `<button type="button" class="instagram-media-card ${grid ? 'instagram-grid-card' : ''}" data-media-key="${key}" title="${esc(title || label)}">
-    ${visual}
+  return `${visual}
     <span class="instagram-media-label">${esc(label)}${item.resources?.length ? ` · ${item.resources.length}` : ''}</span>
-    ${meta}
+    ${meta}`;
+}
+
+function _mediaCardHtml(item, { grid = false } = {}) {
+  const key = _storeMedia(item);
+  const label = item.kind || item.source || 'media';
+  const title = item.title || item.caption || item.code || label;
+  return `<button type="button" class="instagram-media-card ${grid ? 'instagram-grid-card' : ''}" data-media-key="${key}" title="${esc(title || label)}">
+    ${_mediaCardInnerHtml(item, { grid })}
   </button>`;
 }
 
@@ -302,15 +344,43 @@ function _wireMediaClicks(root = document) {
   root.querySelectorAll('.instagram-media-card[data-media-key]').forEach(btn => {
     if (btn.dataset.wired === '1') return;
     btn.dataset.wired = '1';
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.preventDefault();
       const item = _mediaStore.get(btn.dataset.mediaKey);
-      if (item) _openMediaViewer(item);
+      if (item) {
+        try {
+          await _openMediaViewer(item);
+        } catch (err) {
+          uiModule?.showError?.(err.message || 'Could not load Instagram media');
+        }
+      }
+    });
+  });
+  _hydrateMediaCards(root);
+}
+
+function _hydrateMediaCards(root = document) {
+  root.querySelectorAll('.instagram-media-card[data-media-key]').forEach(btn => {
+    const key = btn.dataset.mediaKey;
+    const item = _mediaStore.get(key);
+    if (!item || _hasLocalMedia(item) || btn.dataset.cacheState === 'loading') return;
+    btn.dataset.cacheState = 'loading';
+    btn.classList.add('loading');
+    _mediaHydrationChain = _mediaHydrationChain.then(() => _cacheMediaItem(item), () => _cacheMediaItem(item));
+    _mediaHydrationChain.then(cached => {
+      _mediaStore.set(key, cached);
+      btn.innerHTML = _mediaCardInnerHtml(cached, { grid: btn.classList.contains('instagram-grid-card') });
+      btn.dataset.cacheState = 'ready';
+      btn.classList.remove('loading');
+    }).catch(() => {
+      btn.dataset.cacheState = 'failed';
+      btn.classList.remove('loading');
     });
   });
 }
 
-function _openMediaViewer(item) {
+async function _openMediaViewer(item) {
+  item = await _cacheMediaItem(item);
   const modal = document.getElementById('instagram-modal');
   const content = modal?.querySelector('.instagram-modal-content');
   if (!content) return;
@@ -624,7 +694,7 @@ async function _createPost() {
     const input = document.getElementById('instagram-create-file');
     if (input) input.value = '';
     _renderSelectedFiles();
-    if (data.result?.media) _openMediaViewer(data.result.media);
+    if (data.result?.media) await _openMediaViewer(data.result.media);
   } catch (err) {
     if (msg) { msg.textContent = err.message || 'Publish failed'; msg.style.color = 'var(--red)'; }
     uiModule?.showError?.(err.message || 'Publish failed');

@@ -10,6 +10,7 @@ message/thread objects, and send tools can use Odysseus chat uploads.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import mimetypes
@@ -34,6 +35,7 @@ server = Server("instagram")
 DATA_DIR = Path(_DATA_DIR)
 PRIVATE_DIR = DATA_DIR / "instagram_private"
 SESSION_DIR = PRIVATE_DIR / "sessions"
+INSTAGRAM_MEDIA_CACHE_DIR = PRIVATE_DIR / "media_cache"
 CONFIG_FILE = DATA_DIR / "instagram_accounts.json"
 INSTAGRAM_MCP_ATTACHMENT_MAX_BYTES = int(
     os.environ.get("INSTAGRAM_MCP_ATTACHMENT_MAX_BYTES", str(25 * 1024 * 1024))
@@ -273,6 +275,56 @@ def _obj_to_dict(obj) -> dict:
 def _url_value(value) -> str:
     text = str(value or "").strip()
     return text if re.match(r"^https?://", text, flags=re.IGNORECASE) else ""
+
+
+def _safe_cache_segment(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    return text.strip("._")[:96] or "media"
+
+
+def _media_cache_id(value: str) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:20]
+
+
+def _cache_filename_stem(item: dict, fallback: str = "") -> str:
+    raw = (
+        item.get("pk")
+        or item.get("id")
+        or item.get("code")
+        or item.get("video_url")
+        or item.get("image_url")
+        or item.get("thumbnail_url")
+        or fallback
+        or "media"
+    )
+    return _safe_cache_segment(f"ig_{_media_cache_id(raw)}")
+
+
+def _media_pk_from_item(item: dict) -> str:
+    for key in ("pk", "media_pk", "media_id", "id"):
+        raw = str(item.get(key) or "").strip()
+        if not raw:
+            continue
+        match = re.match(r"^(\d+)", raw)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _cache_url_for_path(path: Path) -> str:
+    rel = path.resolve().relative_to(INSTAGRAM_MEDIA_CACHE_DIR.resolve())
+    return "/api/instagram/media-file/" + "/".join(rel.parts)
+
+
+def resolve_instagram_media_cache_file(file_path: str) -> Path:
+    raw = str(file_path or "").strip()
+    if not raw:
+        raise FileNotFoundError("Media file not found")
+    root = INSTAGRAM_MEDIA_CACHE_DIR.resolve()
+    path = (root / raw).resolve()
+    if not _is_under_path(path, root) or not path.exists() or not path.is_file():
+        raise FileNotFoundError("Media file not found")
+    return path
 
 
 def _first_url_from_candidates(value) -> str:
@@ -768,6 +820,140 @@ class InstagramPrivateProvider:
         username = self.account.get("username") or ""
         return f"{self.account.get('name') or username} ({username})" if username else str(self.account.get("name"))
 
+    def media_cache_root(self) -> Path:
+        key = _safe_cache_segment(
+            str(self.account.get("id") or self.account.get("username") or self.account.get("name") or "default")
+        )
+        root = (INSTAGRAM_MEDIA_CACHE_DIR / key).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _cached_media_path(self, folder: Path, stem: str) -> Path | None:
+        try:
+            for path in sorted(folder.glob(f"{stem}.*")):
+                resolved = path.resolve()
+                if resolved.is_file() and _is_under_path(resolved, INSTAGRAM_MEDIA_CACHE_DIR):
+                    return resolved
+        except Exception:
+            pass
+        return None
+
+    def _call_download(self, fn, *args, **kwargs) -> Path:
+        try:
+            return Path(fn(*args, **kwargs)).resolve()
+        except TypeError:
+            kwargs.pop("overwrite", None)
+            return Path(fn(*args, **kwargs)).resolve()
+
+    def _download_media_path(self, cl, item: dict, *, is_video: bool) -> Path:
+        folder = self.media_cache_root()
+        image_url = _url_value(item.get("remote_image_url") or item.get("image_url") or item.get("thumbnail_url"))
+        video_url = _url_value(item.get("remote_video_url") or item.get("video_url"))
+        source = str(item.get("source") or "").lower()
+        product_type = str(item.get("product_type") or "").lower()
+        kind = str(item.get("kind") or "").lower()
+        pk = _media_pk_from_item(item)
+        stem = _cache_filename_stem(item, video_url or image_url or pk)
+        cached = self._cached_media_path(folder, stem)
+        if cached:
+            return cached
+
+        is_story = source == "story" or product_type == "story" or kind == "story"
+        if is_story:
+            url = video_url if is_video else image_url
+            if url and hasattr(cl, "story_download_by_url"):
+                return self._call_download(cl.story_download_by_url, url, filename=stem, folder=folder)
+            if pk and hasattr(cl, "story_download"):
+                return self._call_download(cl.story_download, pk, filename=stem, folder=folder)
+
+        if is_video:
+            if pk and hasattr(cl, "video_download"):
+                try:
+                    return self._call_download(cl.video_download, int(pk), folder=folder, overwrite=False)
+                except Exception:
+                    pass
+            if pk and hasattr(cl, "clip_download") and product_type in {"clips", "reels", "reel"}:
+                try:
+                    return self._call_download(cl.clip_download, int(pk), folder=folder)
+                except Exception:
+                    pass
+            if video_url and hasattr(cl, "video_download_by_url"):
+                return self._call_download(cl.video_download_by_url, video_url, filename=stem, folder=folder, overwrite=False)
+        else:
+            if pk and hasattr(cl, "photo_download"):
+                try:
+                    return self._call_download(cl.photo_download, int(pk), folder=folder, overwrite=False)
+                except Exception:
+                    pass
+            if image_url and hasattr(cl, "photo_download_by_url"):
+                return self._call_download(cl.photo_download_by_url, image_url, filename=stem, folder=folder, overwrite=False)
+
+        raise RuntimeError("Instagram media has no downloadable photo/video URL or media PK")
+
+    def _attach_local_media(self, item: dict, path: Path, *, is_video: bool) -> dict:
+        resolved = path.resolve()
+        if not _is_under_path(resolved, INSTAGRAM_MEDIA_CACHE_DIR):
+            raise RuntimeError("Instagram media cache path escaped cache directory")
+        local_url = _cache_url_for_path(resolved)
+        content_type = mimetypes.guess_type(str(resolved))[0] or ("video/mp4" if is_video else "image/jpeg")
+        out = {**item}
+        out["local_path"] = str(resolved)
+        out["local_url"] = local_url
+        out["local_content_type"] = content_type
+        if is_video:
+            out.setdefault("remote_video_url", out.get("video_url") or "")
+            out["local_video_url"] = local_url
+            out["video_url"] = local_url
+        else:
+            out.setdefault("remote_image_url", out.get("image_url") or out.get("thumbnail_url") or "")
+            out["local_image_url"] = local_url
+            out["image_url"] = local_url
+            out["thumbnail_url"] = local_url
+        return out
+
+    def cache_media(self, media: dict, *, resource_index: int | None = None) -> dict:
+        cl = self.login()
+        item = dict(media or {})
+        if not item:
+            raise RuntimeError("Instagram media item is required")
+        resources = [dict(res) for res in item.get("resources") or [] if isinstance(res, dict)]
+        if resource_index is not None and resources:
+            try:
+                item = resources[int(resource_index)]
+                resources = [dict(res) for res in item.get("resources") or [] if isinstance(res, dict)]
+            except Exception as exc:
+                raise RuntimeError("Invalid Instagram media resource index") from exc
+        if resources:
+            localized = []
+            for resource in resources:
+                try:
+                    localized.append(self.cache_media(resource))
+                except Exception:
+                    localized.append(resource)
+            out = {**item, "resources": localized}
+            primary = next((res for res in localized if res.get("local_url")), None)
+            if primary:
+                for key in ("local_path", "local_url", "local_content_type", "local_image_url", "local_video_url"):
+                    if primary.get(key):
+                        out[key] = primary[key]
+                if primary.get("local_video_url"):
+                    out.setdefault("remote_video_url", out.get("video_url") or "")
+                    out["video_url"] = primary["local_video_url"]
+                if primary.get("local_image_url"):
+                    out.setdefault("remote_image_url", out.get("image_url") or out.get("thumbnail_url") or "")
+                    out["image_url"] = primary["local_image_url"]
+                    out["thumbnail_url"] = primary["local_image_url"]
+            return out
+
+        is_video = bool(
+            _url_value(item.get("remote_video_url") or item.get("video_url"))
+            or item.get("media_type") == 2
+            or str(item.get("kind") or "").lower() in {"video", "reel", "clip"}
+            or str(item.get("product_type") or "").lower() in {"clips", "reels", "reel"}
+        )
+        path = self._download_media_path(cl, item, is_video=is_video)
+        return self._attach_local_media(item, path, is_video=is_video)
+
     def list_threads(self, amount=20) -> list[dict]:
         cl = self.login()
         threads = cl.direct_threads(amount=_coerce_limit(amount, default=20, maximum=100))
@@ -1209,6 +1395,8 @@ def _format_media_row(item: dict, index: int | None = None) -> list[str]:
         lines.append(f"   Image: {item.get('image_url')}")
     if item.get("video_url"):
         lines.append(f"   Video: {item.get('video_url')}")
+    if item.get("local_path"):
+        lines.append(f"   Local file: {item.get('local_path')}")
     if item.get("resources"):
         lines.append(f"   Resources: {len(item.get('resources') or [])}")
     return lines

@@ -294,3 +294,32 @@ def test_instagram_create_post_uses_photo_upload_for_feed_image(monkeypatch, tmp
     assert calls == [("photo_upload", image, "hello")]
     assert result["media"]["url"] == "https://www.instagram.com/p/ABC123/"
     assert result["media"]["caption"] == "hello"
+
+
+def test_instagram_cache_media_downloads_video_to_local_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(ig, "INSTAGRAM_MEDIA_CACHE_DIR", tmp_path / "instagram_media")
+    calls = []
+
+    class FakeClient:
+        def video_download(self, media_pk, folder="", overwrite=True):
+            calls.append(("video_download", media_pk, folder, overwrite))
+            path = folder / "alice_123.mp4"
+            path.write_bytes(b"video")
+            return path
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+
+    result = provider.cache_media({
+        "pk": "123",
+        "media_type": 2,
+        "kind": "video",
+        "video_url": "https://cdn.example.invalid/video.mp4",
+    })
+
+    assert calls == [("video_download", 123, tmp_path / "instagram_media" / "main", False)]
+    assert result["remote_video_url"] == "https://cdn.example.invalid/video.mp4"
+    assert result["video_url"].startswith("/api/instagram/media-file/main/")
+    assert result["local_video_url"] == result["video_url"]
+    assert result["local_path"].endswith("alice_123.mp4")

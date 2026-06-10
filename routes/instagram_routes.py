@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.auth_helpers import require_user
@@ -26,6 +28,12 @@ class InstagramCreatePostRequest(BaseModel):
     caption: str = ""
     attachments: list[Any] | None = None
     target: str = "feed"
+
+
+class InstagramMediaCacheRequest(BaseModel):
+    account: str | None = None
+    media: dict[str, Any]
+    resource_index: int | None = None
 
 
 def _provider(account=None):
@@ -177,6 +185,40 @@ def setup_instagram_routes() -> APIRouter:
             }
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @router.post("/media/cache")
+    async def cache_media(req: InstagramMediaCacheRequest, request: Request):
+        require_user(request)
+        try:
+            provider = _provider(req.account)
+            media = await asyncio.to_thread(
+                provider.cache_media,
+                req.media,
+                resource_index=req.resource_index,
+            )
+            return {
+                "ok": True,
+                "account": provider.account_label(),
+                "account_id": str(provider.account.get("id") or req.account or ""),
+                "media": media,
+            }
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @router.get("/media-file/{file_path:path}")
+    async def media_file(file_path: str, request: Request):
+        require_user(request)
+        try:
+            from mcp_servers.instagram_server import resolve_instagram_media_cache_file
+            path = resolve_instagram_media_cache_file(file_path)
+        except Exception as exc:
+            raise HTTPException(404, "Media file not found") from exc
+        media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
 
     @router.get("/posts/{media_id}")
     async def get_post(media_id: str, request: Request, account: str | None = None):
