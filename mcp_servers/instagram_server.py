@@ -304,6 +304,36 @@ def _instagram_setup_hint() -> str:
     )
 
 
+def _instagram_install_hint() -> str:
+    return (
+        "instagrapi is not installed in this runtime. Rebuild/reinstall with "
+        "`pip install -r requirements.txt` so the default Instagram Private API "
+        "integration can log in."
+    )
+
+
+def _instagram_login_hint(exc: Exception, *, method: str) -> RuntimeError:
+    detail = str(exc or "").strip() or exc.__class__.__name__
+    lower = detail.lower()
+    if "facebook" in lower or "blacklist" in lower or "challenge" in lower or "checkpoint" in lower:
+        hint = (
+            "Instagram rejected private API password login. This is not an official API-key issue. "
+            "Log in in a browser/app and approve any challenge, then paste a fresh sessionid cookie "
+            "into Settings > Integrations > Instagram Private API, or configure a residential proxy/new IP."
+        )
+    elif method == "session ID":
+        hint = (
+            "Instagram rejected the session ID. Paste a fresh sessionid cookie from a browser where "
+            "this account is already logged in, or remove the session ID and try password login."
+        )
+    else:
+        hint = (
+            "Instagram rejected private API login. Try a fresh sessionid cookie in Settings > "
+            "Integrations > Instagram Private API, or configure the Proxy field."
+        )
+    return RuntimeError(f"{detail} {hint}")
+
+
 def _load_integrations_rows() -> list[dict]:
     try:
         from src.integrations import load_integrations
@@ -478,10 +508,7 @@ class InstagramPrivateProvider:
             from instagrapi import Client
             return Client
         except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "instagrapi is not installed. Install optional dependencies with "
-                "`pip install -r requirements-optional.txt` or `pip install instagrapi`."
-            ) from exc
+            raise RuntimeError(_instagram_install_hint()) from exc
 
     def login(self):
         if self.client is not None:
@@ -502,14 +529,30 @@ class InstagramPrivateProvider:
             except Exception:
                 pass
 
+        attempts = []
+        if sessionid and hasattr(cl, "login_by_sessionid"):
+            attempts.append(("session ID", lambda: cl.login_by_sessionid(sessionid)))
         if username and password:
-            cl.login(username, password)
-        elif sessionid and hasattr(cl, "login_by_sessionid"):
-            cl.login_by_sessionid(sessionid)
-        else:
+            attempts.append(("password", lambda: cl.login(username, password)))
+        if not attempts:
             raise RuntimeError(
                 f"Instagram account `{self.account.get('name')}` needs password or sessionid credentials."
             )
+        last_error = None
+        for method, attempt in attempts:
+            try:
+                ok = attempt()
+                if ok is False:
+                    raise RuntimeError(f"{method} login returned false")
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = _instagram_login_hint(exc, method=method)
+                if method == "session ID" and username and password:
+                    continue
+                raise last_error
+        if last_error is not None:
+            raise last_error
 
         if hasattr(cl, "dump_settings"):
             try:

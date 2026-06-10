@@ -121,3 +121,84 @@ def test_instagram_attachment_resolves_chat_upload_original_filename(monkeypatch
     assert prepared[0]["path"] == stored_path.resolve()
     assert prepared[0]["filename"] == "janus.png"
     assert prepared[0]["content_type"] == "image/png"
+
+
+def test_instagram_login_prefers_sessionid_over_password(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeClient:
+        def login_by_sessionid(self, sessionid):
+            calls.append(("sessionid", sessionid))
+            return True
+
+        def login(self, username, password):
+            calls.append(("password", username, password))
+            return True
+
+    monkeypatch.setattr(ig, "SESSION_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(ig, "_resolve_account", lambda account=None: {
+        "id": "main",
+        "name": "Main IG",
+        "username": "alice",
+        "password": "pw",
+        "sessionid": "sid",
+    })
+    monkeypatch.setattr(ig.InstagramPrivateProvider, "_import_client", lambda self: FakeClient)
+
+    ig.InstagramPrivateProvider().login()
+
+    assert calls == [("sessionid", "sid")]
+
+
+def test_instagram_login_falls_back_to_password_after_bad_sessionid(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeClient:
+        def login_by_sessionid(self, sessionid):
+            calls.append(("sessionid", sessionid))
+            raise RuntimeError("bad session")
+
+        def login(self, username, password):
+            calls.append(("password", username, password))
+            return True
+
+    monkeypatch.setattr(ig, "SESSION_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(ig, "_resolve_account", lambda account=None: {
+        "id": "main",
+        "name": "Main IG",
+        "username": "alice",
+        "password": "pw",
+        "sessionid": "sid",
+    })
+    monkeypatch.setattr(ig.InstagramPrivateProvider, "_import_client", lambda self: FakeClient)
+
+    ig.InstagramPrivateProvider().login()
+
+    assert calls == [("sessionid", "sid"), ("password", "alice", "pw")]
+
+
+def test_instagram_login_blacklist_error_mentions_sessionid_and_proxy(monkeypatch, tmp_path):
+    class FakeClient:
+        def login(self, username, password):
+            raise RuntimeError(
+                "You can log in with your linked Facebook account. "
+                "If you are sure that the password is correct, then change your IP address, "
+                "because it is added to the blacklist of the Instagram Server"
+            )
+
+    monkeypatch.setattr(ig, "SESSION_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(ig, "_resolve_account", lambda account=None: {
+        "id": "main",
+        "name": "Main IG",
+        "username": "alice",
+        "password": "pw",
+        "sessionid": "",
+    })
+    monkeypatch.setattr(ig.InstagramPrivateProvider, "_import_client", lambda self: FakeClient)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        ig.InstagramPrivateProvider().login()
+
+    message = str(excinfo.value)
+    assert "sessionid cookie" in message
+    assert "residential proxy/new IP" in message
