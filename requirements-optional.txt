@@ -17,11 +17,6 @@ faster-whisper
 # Alternatives: SearXNG, Brave, Tavily, Serper, Google PSE.
 duckduckgo-search
 
-# Instagram private API MCP provider. Optional and lazy-imported by
-# mcp_servers/instagram_server.py; use at your own account risk because this is
-# an unofficial/private API client.
-instagrapi
-
 # PDF form-filling feature (fillable AcroForm detection, field extraction,
 # value/annotation/signature stamping, page rendering for the form overlay).
 # NOTE: PyMuPDF is AGPL-3.0. Installing it brings AGPL obligations for a

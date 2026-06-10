@@ -38,6 +38,9 @@ caldav
 cryptography
 bcrypt
 mcp
+# Instagram Private API integration. The MCP server lazy-imports this at login
+# time, but the integration is exposed in the default UI/container image.
+instagrapi
 pyotp
 qrcode[pil]
 croniter
