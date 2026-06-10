@@ -23,7 +23,6 @@ let _activeTab = 'dm';
 let _searchTimer = null;
 let _mediaSeq = 0;
 let _mediaStore = new Map();
-let _mediaHydrationChain = Promise.resolve();
 let _avatarSeq = 0;
 let _avatarStore = new Map();
 let _avatarHydrationChain = Promise.resolve();
@@ -409,12 +408,12 @@ function _hasLocalMedia(item) {
   return Boolean(media.image || media.video);
 }
 
-async function _cacheMediaItem(item) {
-  if (!item || _hasLocalMedia(item)) return item;
+async function _cacheMediaItem(item, { force = false } = {}) {
+  if (!item || (_hasLocalMedia(item) && !force)) return item;
   const data = await _fetchJson(`${API_BASE}/api/instagram/media/cache`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ account: _account || undefined, media: item }),
+    body: JSON.stringify({ account: _account || undefined, media: item, force }),
   });
   return data.media || item;
 }
@@ -427,7 +426,7 @@ function _mediaCardInnerHtml(item, { grid = false } = {}) {
     ? `<video src="${esc(media.video)}" muted playsinline preload="metadata" poster="${esc(media.image)}"></video>`
     : media.image
       ? `<img src="${esc(media.image)}" alt="${esc(title)}" loading="lazy">`
-      : `<div class="instagram-empty" style="padding:18px 8px;">Preparing media...</div>`;
+      : `<div class="instagram-empty" style="padding:18px 8px;">Click to load media</div>`;
   const meta = grid ? `<div class="instagram-grid-meta">
     <div style="font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(title || label)}</div>
     <div style="opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(item.username ? '@' + item.username : item.taken_at || item.pk || '')}</div>
@@ -457,35 +456,21 @@ function _wireMediaClicks(root = document) {
     btn.dataset.wired = '1';
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
-      const item = _mediaStore.get(btn.dataset.mediaKey);
+      const key = btn.dataset.mediaKey;
+      const item = _mediaStore.get(key);
       if (item) {
         try {
-          await _openMediaViewer(item);
+          btn.classList.add('loading');
+          const cached = await _cacheMediaItem(item);
+          _mediaStore.set(key, cached);
+          btn.innerHTML = _mediaCardInnerHtml(cached, { grid: btn.classList.contains('instagram-grid-card') });
+          await _openMediaViewer(cached);
         } catch (err) {
           uiModule?.showError?.(err.message || 'Could not load Instagram media');
+        } finally {
+          btn.classList.remove('loading');
         }
       }
-    });
-  });
-  _hydrateMediaCards(root);
-}
-
-function _hydrateMediaCards(root = document) {
-  root.querySelectorAll('.instagram-media-card[data-media-key]').forEach(btn => {
-    const key = btn.dataset.mediaKey;
-    const item = _mediaStore.get(key);
-    if (!item || _hasLocalMedia(item) || btn.dataset.cacheState === 'loading') return;
-    btn.dataset.cacheState = 'loading';
-    btn.classList.add('loading');
-    _mediaHydrationChain = _mediaHydrationChain.then(() => _cacheMediaItem(item), () => _cacheMediaItem(item));
-    _mediaHydrationChain.then(cached => {
-      _mediaStore.set(key, cached);
-      btn.innerHTML = _mediaCardInnerHtml(cached, { grid: btn.classList.contains('instagram-grid-card') });
-      btn.dataset.cacheState = 'ready';
-      btn.classList.remove('loading');
-    }).catch(() => {
-      btn.dataset.cacheState = 'failed';
-      btn.classList.remove('loading');
     });
   });
 }
@@ -515,6 +500,7 @@ async function _openMediaViewer(item) {
       <div class="modal-header">
         <h4 style="display:flex;align-items:center;gap:6px;">${IG_ICON} ${esc(title || 'Media')}</h4>
         <span style="flex:1"></span>
+        <button class="instagram-btn" id="instagram-media-refetch" title="Reload media">${REFRESH_ICON} Reload media</button>
         ${item.url ? `<a class="instagram-btn" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Open</a>` : ''}
         <button class="close-btn" id="instagram-media-close">x</button>
       </div>
@@ -535,6 +521,18 @@ async function _openMediaViewer(item) {
     if (e.target === overlay) overlay.remove();
   });
   overlay.querySelector('#instagram-media-close')?.addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#instagram-media-refetch')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const fresh = await _cacheMediaItem(item, { force: true });
+      overlay.remove();
+      await _openMediaViewer(fresh);
+    } catch (err) {
+      btn.disabled = false;
+      uiModule?.showError?.(err.message || 'Could not reload Instagram media');
+    }
+  });
   _wireMediaClicks(overlay);
 }
 

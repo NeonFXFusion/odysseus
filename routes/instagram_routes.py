@@ -34,11 +34,13 @@ class InstagramMediaCacheRequest(BaseModel):
     account: str | None = None
     media: dict[str, Any]
     resource_index: int | None = None
+    force: bool = False
 
 
 class InstagramProfileCacheRequest(BaseModel):
     account: str | None = None
     user: dict[str, Any]
+    force: bool = False
 
 
 def _provider(account=None):
@@ -200,6 +202,7 @@ def setup_instagram_routes() -> APIRouter:
                 provider.cache_media,
                 req.media,
                 resource_index=req.resource_index,
+                force=req.force,
             )
             return {
                 "ok": True,
@@ -215,7 +218,11 @@ def setup_instagram_routes() -> APIRouter:
         require_user(request)
         try:
             provider = _provider(req.account)
-            user = await asyncio.to_thread(provider.cache_profile_picture_user, req.user)
+            user = await asyncio.to_thread(
+                provider.cache_profile_picture_user,
+                req.user,
+                force=req.force,
+            )
             return {
                 "ok": True,
                 "account": provider.account_label(),

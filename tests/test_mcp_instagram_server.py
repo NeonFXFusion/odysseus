@@ -7,6 +7,13 @@ pytest.importorskip("mcp")
 import mcp_servers.instagram_server as ig
 
 
+@pytest.fixture(autouse=True)
+def _instagram_request_test_defaults(monkeypatch):
+    monkeypatch.setattr(ig, "INSTAGRAM_MCP_REMOTE_REQUEST_MIN_INTERVAL_SECONDS", 0.0)
+    ig._REMOTE_REQUEST_LOCKS.clear()
+    ig._REMOTE_REQUEST_LAST_AT.clear()
+
+
 def test_extract_instagram_urls_tracks_package_links():
     result = ig._extract_instagram_urls(
         "Track package: https://carrier.example/track?id=123 and logo https://cdn.example/logo.png"
@@ -373,6 +380,53 @@ def test_instagram_cache_media_falls_back_when_download_by_url_has_no_extension(
     assert result["video_url"].startswith("/api/instagram/media-file/main/")
 
 
+def test_instagram_cache_media_force_refetches_existing_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(ig, "INSTAGRAM_MEDIA_CACHE_DIR", tmp_path / "instagram_media")
+    calls = []
+
+    class FakeResponse:
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=8192):
+            yield b"jpg"
+
+    class FakeClient:
+        request_timeout = 3
+
+        def _send_public_request(self, url, stream=True, timeout=30):
+            calls.append(url)
+            return FakeResponse()
+
+        def _download_response_to_path(self, response, path):
+            path.write_bytes(b"jpg")
+            return path
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+
+    item = {
+        "pk": "123",
+        "media_type": 1,
+        "kind": "image",
+        "image_url": "https://cdn.example.invalid/photo.jpg?token=1",
+    }
+
+    first = provider.cache_media(item)
+    second = provider.cache_media(first)
+    third = provider.cache_media(second, force=True)
+
+    assert calls == [
+        "https://cdn.example.invalid/photo.jpg?token=1",
+        "https://cdn.example.invalid/photo.jpg?token=1",
+    ]
+    assert second["local_path"] == first["local_path"]
+    assert third["local_path"] != first["local_path"]
+
+
 def test_instagram_profile_picture_is_cached_to_local_url(monkeypatch, tmp_path):
     monkeypatch.setattr(ig, "INSTAGRAM_MEDIA_CACHE_DIR", tmp_path / "instagram_media")
 
@@ -409,6 +463,108 @@ def test_instagram_profile_picture_is_cached_to_local_url(monkeypatch, tmp_path)
     assert result["profile_pic_url"].startswith("/api/instagram/media-file/main/profiles/")
     assert result["profile_pic_url"] == result["local_profile_pic_url"]
     assert result["local_profile_pic_path"].endswith(".jpg")
+
+
+def test_instagram_profile_picture_cache_reuses_user_entry_without_refetch(monkeypatch, tmp_path):
+    monkeypatch.setattr(ig, "INSTAGRAM_MEDIA_CACHE_DIR", tmp_path / "instagram_media")
+    calls = []
+
+    class FakeResponse:
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=8192):
+            yield b"jpg"
+
+    class FakeClient:
+        request_timeout = 3
+
+        def _send_public_request(self, url, stream=True, timeout=30):
+            calls.append(url)
+            return FakeResponse()
+
+        def _download_response_to_path(self, response, path):
+            path.write_bytes(b"jpg")
+            return path
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+
+    first = provider.cache_profile_picture_user({
+        "id": "100",
+        "username": "alice",
+        "remote_profile_pic_url": "https://cdn.example.invalid/avatar?token=1",
+    })
+    second = provider.cache_profile_picture_user({
+        "id": "100",
+        "username": "alice",
+        "remote_profile_pic_url": "https://cdn.example.invalid/avatar?token=2",
+    })
+
+    assert calls == ["https://cdn.example.invalid/avatar?token=1"]
+    assert second["profile_pic_url"] == first["profile_pic_url"]
+
+
+def test_instagram_profile_picture_force_refetches_same_url(monkeypatch, tmp_path):
+    monkeypatch.setattr(ig, "INSTAGRAM_MEDIA_CACHE_DIR", tmp_path / "instagram_media")
+    calls = []
+
+    class FakeResponse:
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=8192):
+            yield b"jpg"
+
+    class FakeClient:
+        request_timeout = 3
+
+        def _send_public_request(self, url, stream=True, timeout=30):
+            calls.append(url)
+            return FakeResponse()
+
+        def _download_response_to_path(self, response, path):
+            path.write_bytes(b"jpg")
+            return path
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+    provider.login = lambda: FakeClient()
+
+    user = {
+        "id": "100",
+        "username": "alice",
+        "remote_profile_pic_url": "https://cdn.example.invalid/avatar?token=1",
+    }
+
+    first = provider.cache_profile_picture_user(user)
+    second = provider.cache_profile_picture_user(first, force=True)
+
+    assert calls == [
+        "https://cdn.example.invalid/avatar?token=1",
+        "https://cdn.example.invalid/avatar?token=1",
+    ]
+    assert second["profile_pic_url"] != first["profile_pic_url"]
+
+
+def test_instagram_remote_request_gate_rate_limits_same_account(monkeypatch):
+    monkeypatch.setattr(ig, "INSTAGRAM_MCP_REMOTE_REQUEST_MIN_INTERVAL_SECONDS", 2.0)
+    times = iter([100.0, 100.0, 100.5, 102.0])
+    sleeps = []
+    monkeypatch.setattr(ig.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(ig.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    provider = object.__new__(ig.InstagramPrivateProvider)
+    provider.account = {"id": "main", "name": "Main IG", "username": "alice"}
+
+    assert provider._run_remote_request(lambda: "first") == "first"
+    assert provider._run_remote_request(lambda: "second") == "second"
+    assert sleeps == [1.5]
 
 
 def test_instagram_list_stories_uses_reels_tray_when_no_username():

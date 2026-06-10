@@ -17,7 +17,9 @@ import mimetypes
 import os
 import re
 import sys
-from datetime import datetime
+import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -40,7 +42,13 @@ CONFIG_FILE = DATA_DIR / "instagram_accounts.json"
 INSTAGRAM_MCP_ATTACHMENT_MAX_BYTES = int(
     os.environ.get("INSTAGRAM_MCP_ATTACHMENT_MAX_BYTES", str(25 * 1024 * 1024))
 )
+INSTAGRAM_MCP_REMOTE_REQUEST_MIN_INTERVAL_SECONDS = float(
+    os.environ.get("INSTAGRAM_MCP_REMOTE_REQUEST_MIN_INTERVAL_SECONDS", "1.5")
+)
 INSTAGRAM_INTEGRATION_PRESETS = {"instagram_private"}
+_REMOTE_REQUEST_GUARD = threading.Lock()
+_REMOTE_REQUEST_LOCKS: dict[str, threading.Lock] = {}
+_REMOTE_REQUEST_LAST_AT: dict[str, float] = {}
 
 
 def _clean_url_candidate(value) -> str:
@@ -838,6 +846,26 @@ class InstagramPrivateProvider:
         root.mkdir(parents=True, exist_ok=True)
         return root
 
+    def _remote_request_bucket(self) -> str:
+        return _safe_cache_segment(
+            str(self.account.get("id") or self.account.get("username") or self.account.get("name") or "default")
+        )
+
+    def _run_remote_request(self, fn):
+        bucket = self._remote_request_bucket()
+        with _REMOTE_REQUEST_GUARD:
+            lock = _REMOTE_REQUEST_LOCKS.setdefault(bucket, threading.Lock())
+        with lock:
+            interval = max(0.0, float(INSTAGRAM_MCP_REMOTE_REQUEST_MIN_INTERVAL_SECONDS or 0.0))
+            last_at = _REMOTE_REQUEST_LAST_AT.get(bucket, 0.0)
+            wait = interval - (time.monotonic() - last_at)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                return fn()
+            finally:
+                _REMOTE_REQUEST_LAST_AT[bucket] = time.monotonic()
+
     def _cached_media_path(self, folder: Path, stem: str) -> Path | None:
         try:
             for path in sorted(folder.glob(f"{stem}.*")):
@@ -849,49 +877,106 @@ class InstagramPrivateProvider:
         return None
 
     def _call_download(self, fn, *args, **kwargs) -> Path:
-        try:
-            return Path(fn(*args, **kwargs)).resolve()
-        except TypeError:
-            kwargs.pop("overwrite", None)
-            return Path(fn(*args, **kwargs)).resolve()
+        def run():
+            try:
+                return Path(fn(*args, **kwargs)).resolve()
+            except TypeError:
+                kwargs.pop("overwrite", None)
+                return Path(fn(*args, **kwargs)).resolve()
+        return self._run_remote_request(run)
 
     def _download_url_with_client(self, cl, url: str, *, folder: Path, stem: str, is_video: bool) -> Path:
         request = getattr(cl, "_send_public_request", None)
         if not callable(request):
             raise RuntimeError("instagrapi client cannot download URL media")
         folder.mkdir(parents=True, exist_ok=True)
-        response = request(url, stream=True, timeout=getattr(cl, "request_timeout", 30))
-        response.raise_for_status()
-        content_type = str(getattr(response, "headers", {}).get("content-type") or "").split(";", 1)[0].strip()
-        suffix = Path(urlparse(str(url)).path).suffix.lower()
-        if not re.fullmatch(r"\.[a-z0-9]{2,5}", suffix or ""):
-            suffix = mimetypes.guess_extension(content_type) or (".mp4" if is_video else ".jpg")
-        path = (folder / f"{stem}{suffix}").resolve()
-        if path.exists():
+        def run():
+            response = request(url, stream=True, timeout=getattr(cl, "request_timeout", 30))
+            response.raise_for_status()
+            content_type = str(getattr(response, "headers", {}).get("content-type") or "").split(";", 1)[0].strip()
+            suffix = Path(urlparse(str(url)).path).suffix.lower()
+            if not re.fullmatch(r"\.[a-z0-9]{2,5}", suffix or ""):
+                suffix = mimetypes.guess_extension(content_type) or (".mp4" if is_video else ".jpg")
+            path = (folder / f"{stem}{suffix}").resolve()
+            if path.exists():
+                return path
+            writer = getattr(cl, "_download_response_to_path", None)
+            if callable(writer):
+                return Path(writer(response, path)).resolve()
+            with path.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        handle.write(chunk)
             return path
-        writer = getattr(cl, "_download_response_to_path", None)
-        if callable(writer):
-            return Path(writer(response, path)).resolve()
-        with path.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    handle.write(chunk)
-        return path
+        return self._run_remote_request(run)
 
-    def cache_profile_picture_url(self, url: str, *, user_id: str = "", username: str = "") -> Path:
+    def _profile_cache_dir(self) -> Path:
+        root = self.media_cache_root() / "profiles"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _profile_cache_index_path(self) -> Path:
+        return self._profile_cache_dir() / "index.json"
+
+    def _load_profile_cache_index(self) -> dict:
+        path = self._profile_cache_index_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_profile_cache_index(self, index: dict) -> None:
+        path = self._profile_cache_index_path()
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+    def _profile_cache_key(self, *, user_id: str = "", username: str = "", url: str = "") -> str:
+        return _safe_cache_segment(user_id or username or _media_cache_id(url))
+
+    def _profile_cached_path(self, *, cache_key: str) -> Path | None:
+        index = self._load_profile_cache_index()
+        entry = index.get(cache_key) if isinstance(index.get(cache_key), dict) else {}
+        raw = entry.get("path") or ""
+        if raw:
+            try:
+                path = Path(raw).resolve()
+                if path.exists() and path.is_file() and _is_under_path(path, INSTAGRAM_MEDIA_CACHE_DIR):
+                    return path
+            except Exception:
+                pass
+        return self._cached_media_path(self._profile_cache_dir(), f"profile_{cache_key}")
+
+    def cache_profile_picture_url(self, url: str, *, user_id: str = "", username: str = "", force: bool = False) -> Path:
         url = _url_value(url)
         if not url:
             raise RuntimeError("Profile picture URL is required")
-        cl = self.login()
-        folder = self.media_cache_root() / "profiles"
-        raw = username or user_id or url
-        stem = _safe_cache_segment(f"profile_{raw}_{_media_cache_id(url)}")
-        cached = self._cached_media_path(folder, stem)
-        if cached:
+        cache_key = self._profile_cache_key(user_id=user_id, username=username, url=url)
+        cached = self._profile_cached_path(cache_key=cache_key)
+        if cached and not force:
             return cached
-        return self._download_url_with_client(cl, url, folder=folder, stem=stem, is_video=False)
+        cl = self.login()
+        stem_parts = ["profile", cache_key, _media_cache_id(url)]
+        if force:
+            stem_parts.append(str(time.time_ns()))
+        stem = _safe_cache_segment("_".join(stem_parts))
+        path = self._download_url_with_client(cl, url, folder=self._profile_cache_dir(), stem=stem, is_video=False)
+        index = self._load_profile_cache_index()
+        index[cache_key] = {
+            "path": str(path),
+            "remote_url": url,
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+            "user_id": str(user_id or ""),
+            "username": str(username or ""),
+        }
+        try:
+            self._save_profile_cache_index(index)
+        except Exception:
+            pass
+        return path
 
-    def _localize_user_profile_pic(self, user: dict) -> dict:
+    def _localize_user_profile_pic(self, user: dict, *, force: bool = False) -> dict:
         out = dict(user or {})
         remote = _url_value(
             out.get("remote_profile_pic_url")
@@ -909,6 +994,7 @@ class InstagramPrivateProvider:
                 remote,
                 user_id=str(out.get("id") or ""),
                 username=str(out.get("username") or ""),
+                force=force,
             )
             local_url = _cache_url_for_path(path)
             out["profile_pic_url"] = local_url
@@ -919,8 +1005,8 @@ class InstagramPrivateProvider:
             pass
         return out
 
-    def cache_profile_picture_user(self, user: dict) -> dict:
-        return self._localize_user_profile_pic(user or {})
+    def cache_profile_picture_user(self, user: dict, *, force: bool = False) -> dict:
+        return self._localize_user_profile_pic(user or {}, force=force)
 
     def _localize_media_user_profile(self, item: dict) -> dict:
         out = dict(item or {})
@@ -933,7 +1019,7 @@ class InstagramPrivateProvider:
             out["resources"] = resources
         return out
 
-    def _download_media_path(self, cl, item: dict, *, is_video: bool) -> Path:
+    def _download_media_path(self, cl, item: dict, *, is_video: bool, force: bool = False) -> Path:
         folder = self.media_cache_root()
         image_url = _url_value(item.get("remote_image_url") or item.get("image_url") or item.get("thumbnail_url"))
         video_url = _url_value(item.get("remote_video_url") or item.get("video_url"))
@@ -942,9 +1028,11 @@ class InstagramPrivateProvider:
         kind = str(item.get("kind") or "").lower()
         pk = _media_pk_from_item(item)
         stem = _cache_filename_stem(item, video_url or image_url or pk)
-        cached = self._cached_media_path(folder, stem)
+        cached = self._cached_media_path(folder, stem) if not force else None
         if cached:
             return cached
+        if force:
+            stem = _safe_cache_segment(f"{stem}_refetch_{time.time_ns()}")
 
         is_story = source == "story" or product_type == "story" or kind == "story"
         if is_story:
@@ -965,7 +1053,7 @@ class InstagramPrivateProvider:
         if is_video:
             if pk and hasattr(cl, "video_download"):
                 try:
-                    return self._call_download(cl.video_download, int(pk), folder=folder, overwrite=False)
+                    return self._call_download(cl.video_download, int(pk), folder=folder, overwrite=force)
                 except Exception:
                     pass
             if pk and hasattr(cl, "clip_download") and product_type in {"clips", "reels", "reel"}:
@@ -975,7 +1063,7 @@ class InstagramPrivateProvider:
                     pass
             if video_url and hasattr(cl, "video_download_by_url"):
                 try:
-                    return self._call_download(cl.video_download_by_url, video_url, filename=stem, folder=folder, overwrite=False)
+                    return self._call_download(cl.video_download_by_url, video_url, filename=stem, folder=folder, overwrite=force)
                 except Exception:
                     pass
             if video_url:
@@ -983,12 +1071,12 @@ class InstagramPrivateProvider:
         else:
             if pk and hasattr(cl, "photo_download"):
                 try:
-                    return self._call_download(cl.photo_download, int(pk), folder=folder, overwrite=False)
+                    return self._call_download(cl.photo_download, int(pk), folder=folder, overwrite=force)
                 except Exception:
                     pass
             if image_url and hasattr(cl, "photo_download_by_url"):
                 try:
-                    return self._call_download(cl.photo_download_by_url, image_url, filename=stem, folder=folder, overwrite=False)
+                    return self._call_download(cl.photo_download_by_url, image_url, filename=stem, folder=folder, overwrite=force)
                 except Exception:
                     pass
             if image_url:
@@ -1017,7 +1105,7 @@ class InstagramPrivateProvider:
             out["thumbnail_url"] = local_url
         return out
 
-    def cache_media(self, media: dict, *, resource_index: int | None = None) -> dict:
+    def cache_media(self, media: dict, *, resource_index: int | None = None, force: bool = False) -> dict:
         cl = self.login()
         item = dict(media or {})
         if not item:
@@ -1033,7 +1121,7 @@ class InstagramPrivateProvider:
             localized = []
             for resource in resources:
                 try:
-                    localized.append(self.cache_media(resource))
+                    localized.append(self.cache_media(resource, force=force))
                 except Exception:
                     localized.append(resource)
             out = {**item, "resources": localized}
@@ -1057,12 +1145,14 @@ class InstagramPrivateProvider:
             or str(item.get("kind") or "").lower() in {"video", "reel", "clip"}
             or str(item.get("product_type") or "").lower() in {"clips", "reels", "reel"}
         )
-        path = self._download_media_path(cl, item, is_video=is_video)
+        path = self._download_media_path(cl, item, is_video=is_video, force=force)
         return self._attach_local_media(item, path, is_video=is_video)
 
     def list_threads(self, amount=20) -> list[dict]:
         cl = self.login()
-        threads = cl.direct_threads(amount=_coerce_limit(amount, default=20, maximum=100))
+        threads = self._run_remote_request(
+            lambda: cl.direct_threads(amount=_coerce_limit(amount, default=20, maximum=100))
+        )
         return [self._normalize_thread(thread) for thread in threads or []]
 
     def read_thread(self, thread_id: str, amount=20) -> dict:
@@ -1070,11 +1160,14 @@ class InstagramPrivateProvider:
         thread = None
         if hasattr(cl, "direct_thread"):
             try:
-                thread = cl.direct_thread(thread_id, amount=_coerce_limit(amount, default=20, maximum=100))
+                thread = self._run_remote_request(
+                    lambda: cl.direct_thread(thread_id, amount=_coerce_limit(amount, default=20, maximum=100))
+                )
             except TypeError:
-                thread = cl.direct_thread(thread_id)
+                thread = self._run_remote_request(lambda: cl.direct_thread(thread_id))
         if thread is None:
-            for item in cl.direct_threads(amount=100) or []:
+            fallback_threads = self._run_remote_request(lambda: cl.direct_threads(amount=100))
+            for item in fallback_threads or []:
                 if str(_obj_get(item, "id", "thread_id", "pk", default="")) == str(thread_id):
                     thread = item
                     break
@@ -1123,7 +1216,7 @@ class InstagramPrivateProvider:
                 return clean_username
             if not hasattr(cl, "user_id_from_username"):
                 raise RuntimeError("instagrapi client cannot resolve Instagram usernames")
-            return str(cl.user_id_from_username(clean_username))
+            return str(self._run_remote_request(lambda: cl.user_id_from_username(clean_username)))
         own_id = str(getattr(cl, "user_id", "") or "")
         if own_id:
             return own_id
@@ -1178,7 +1271,11 @@ class InstagramPrivateProvider:
             return []
         for reason in ("pull_to_refresh", "cold_start"):
             try:
-                stories = self._stories_from_tray_payload(fn(reason=reason), user_id=user_id, limit=limit)
+                stories = self._stories_from_tray_payload(
+                    self._run_remote_request(lambda reason=reason: fn(reason=reason)),
+                    user_id=user_id,
+                    limit=limit,
+                )
                 if stories:
                     return stories
             except Exception:
@@ -1197,7 +1294,7 @@ class InstagramPrivateProvider:
             calls.append(lambda fn=fn: (fn([int(user_id)], amount=limit)[0].stories if str(user_id).isdigit() else []))
         for call in calls:
             try:
-                stories = self._normalize_story_collection(call(), limit=limit)
+                stories = self._normalize_story_collection(self._run_remote_request(call), limit=limit)
                 if stories:
                     return stories
             except Exception:
@@ -1219,7 +1316,9 @@ class InstagramPrivateProvider:
     def list_posts(self, *, username=None, user_id=None, amount=24) -> list[dict]:
         cl = self.login()
         resolved_user_id = self._resolve_user_id(cl, username=username, user_id=user_id)
-        posts = cl.user_medias(resolved_user_id, amount=_coerce_limit(amount, default=24, maximum=100))
+        posts = self._run_remote_request(
+            lambda: cl.user_medias(resolved_user_id, amount=_coerce_limit(amount, default=24, maximum=100))
+        )
         return [item for item in (_normalize_media_item(media, source="post") for media in posts or []) if item]
 
     def get_post(self, media_id: str) -> dict:
@@ -1228,10 +1327,10 @@ class InstagramPrivateProvider:
         if not value:
             raise RuntimeError("media_id is required")
         if "/" in value and hasattr(cl, "media_pk_from_url"):
-            value = str(cl.media_pk_from_url(value))
+            value = str(self._run_remote_request(lambda: cl.media_pk_from_url(value)))
         if not value.isdigit() and hasattr(cl, "media_pk_from_code"):
-            value = str(cl.media_pk_from_code(value))
-        media = cl.media_info(value)
+            value = str(self._run_remote_request(lambda: cl.media_pk_from_code(value)))
+        media = self._run_remote_request(lambda: cl.media_info(value))
         item = _normalize_media_item(media, source="post")
         if not item:
             raise RuntimeError(f"Instagram post not found: {media_id}")
@@ -1248,22 +1347,24 @@ class InstagramPrivateProvider:
         first_type = str(first.get("content_type") or "")
         if target in {"story", "stories"}:
             if first_type.startswith("video/"):
-                media = cl.video_upload_to_story(first["path"], caption=caption)
+                media = self._run_remote_request(lambda: cl.video_upload_to_story(first["path"], caption=caption))
             else:
-                media = cl.photo_upload_to_story(first["path"], caption=caption)
+                media = self._run_remote_request(lambda: cl.photo_upload_to_story(first["path"], caption=caption))
             normalized = _normalize_media_item(media, source="story")
         elif target in {"reel", "reels", "clip"}:
             if not first_type.startswith("video/"):
                 raise RuntimeError("Reel publishing requires a video attachment")
-            media = cl.clip_upload(first["path"], caption=caption)
+            media = self._run_remote_request(lambda: cl.clip_upload(first["path"], caption=caption))
             normalized = _normalize_media_item(media, source="reel")
         else:
             if len(prepared) > 1:
-                media = cl.album_upload([item["path"] for item in prepared], caption=caption)
+                media = self._run_remote_request(
+                    lambda: cl.album_upload([item["path"] for item in prepared], caption=caption)
+                )
             elif first_type.startswith("video/"):
-                media = cl.video_upload(first["path"], caption=caption)
+                media = self._run_remote_request(lambda: cl.video_upload(first["path"], caption=caption))
             else:
-                media = cl.photo_upload(first["path"], caption=caption)
+                media = self._run_remote_request(lambda: cl.photo_upload(first["path"], caption=caption))
             normalized = _normalize_media_item(media, source="post")
         return {
             "ok": True,
@@ -1285,14 +1386,18 @@ class InstagramPrivateProvider:
         thread_ids, user_ids = self._recipient_args(cl, thread_id=thread_id, username=username, user_id=user_id)
         sent = None
         if text:
-            sent = cl.direct_send(text, thread_ids=thread_ids or None, user_ids=user_ids or None)
+            sent = self._run_remote_request(
+                lambda: cl.direct_send(text, thread_ids=thread_ids or None, user_ids=user_ids or None)
+            )
         sent_attachments = []
         for item in _prepare_attachments(attachments or []):
             method = "direct_send_video" if str(item.get("content_type", "")).startswith("video/") else "direct_send_photo"
             fn = getattr(cl, method, None)
             if not callable(fn):
                 raise RuntimeError(f"instagrapi client does not support {method}")
-            sent = fn(str(item["path"]), thread_ids=thread_ids or None, user_ids=user_ids or None)
+            sent = self._run_remote_request(
+                lambda fn=fn, item=item: fn(str(item["path"]), thread_ids=thread_ids or None, user_ids=user_ids or None)
+            )
             sent_attachments.append({
                 "filename": item["filename"],
                 "path": str(item["path"]),
@@ -1315,7 +1420,9 @@ class InstagramPrivateProvider:
         if username:
             if not hasattr(cl, "user_id_from_username"):
                 raise RuntimeError("instagrapi client cannot resolve username recipients")
-            user_ids.append(str(cl.user_id_from_username(str(username).lstrip("@"))))
+            user_ids.append(
+                str(self._run_remote_request(lambda: cl.user_id_from_username(str(username).lstrip("@"))))
+            )
         if not thread_ids and not user_ids:
             raise RuntimeError("Provide thread_id, username, or user_id")
         return thread_ids, user_ids
